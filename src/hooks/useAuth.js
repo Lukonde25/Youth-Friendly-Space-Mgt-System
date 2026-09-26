@@ -16,8 +16,13 @@ export const useAuth = () => {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    if (!onAuthStateChange) {
+      setLoading(false)
+      return
+    }
+
     // Set up auth listener
-    const { data: { subscription } } = onAuthStateChange((event, session) => {
+    const { data: { subscription } = {} } = onAuthStateChange((event, session) => {
       if (session) {
         setUser(session.user)
       } else {

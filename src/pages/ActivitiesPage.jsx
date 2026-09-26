@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Modal, Alert, Table } from '../components'
 import { useForm } from '../hooks/useForm'
-import { logActivity, fetchActivities, deleteActivity } from '../services/activityService'
+import { logActivity, fetchActivities, deleteActivity, recordActivityParticipants } from '../services/activityService'
+import { fetchMembers } from '../services/memberService'
 
-export default function ActivitiesPage({ organizationId }) {
+export default function ActivitiesPage({ organizationId, userId }) {
   const [activities, setActivities] = useState([])
+  const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [showLogForm, setShowLogForm] = useState(false)
@@ -18,7 +20,9 @@ export default function ActivitiesPage({ organizationId }) {
       setLoading(true)
       setError(null)
       const data = await fetchActivities(organizationId)
+      const memberData = await fetchMembers(organizationId)
       setActivities(data || [])
+      setMembers(memberData || [])
     } catch (err) {
       setError(err.message)
     } finally {
@@ -43,6 +47,8 @@ export default function ActivitiesPage({ organizationId }) {
     { key: 'people_reached', label: 'People' },
     { key: 'pregnancies_identified', label: 'Pregnancies' },
     { key: 'contraceptives_distributed', label: 'Contraceptives' },
+    { key: 'screenings_done', label: 'Screenings' },
+    { key: 'health_talks_given', label: 'Health Talks' },
     { key: 'actions', label: 'Actions', render: (row) => <Button size="sm" variant="danger" onClick={() => handleDeleteActivity(row.id)}>Delete</Button> }
   ]
 
@@ -70,20 +76,45 @@ export default function ActivitiesPage({ organizationId }) {
         </Card>
       )}
 
-      <LogActivityModal isOpen={showLogForm} organizationId={organizationId} onClose={() => setShowLogForm(false)} onSuccess={loadActivities} />
+      <LogActivityModal isOpen={showLogForm} organizationId={organizationId} userId={userId} members={members} onClose={() => setShowLogForm(false)} onSuccess={loadActivities} />
     </div>
   )
 }
 
-function LogActivityModal({ isOpen, organizationId, onClose, onSuccess }) {
+function LogActivityModal({ isOpen, organizationId, userId, members, onClose, onSuccess }) {
   const [submitError, setSubmitError] = useState(null)
 
   const form = useForm(
-    { activity_type: 'clinic_visit', date: new Date().toISOString().split('T')[0], location: '', people_reached: '', pregnancies_identified: '', contraceptives_distributed: '', notes: '' },
+    { activity_type: 'clinic_visit', date: new Date().toISOString().split('T')[0], location: '', people_reached: '', pregnancies_identified: '', contraceptives_distributed: '', screenings_done: '', health_talks_given: '', participant_ids: [], notes: '' },
     async (values) => {
       try {
         setSubmitError(null)
-        await logActivity(organizationId, 'admin-user', { activity_type: values.activity_type, date: values.date, location: values.location, people_reached: parseInt(values.people_reached) || 0, pregnancies_identified: parseInt(values.pregnancies_identified) || 0, contraceptives_distributed: parseInt(values.contraceptives_distributed) || 0, description: values.notes })
+        const activity = await logActivity(organizationId, userId, {
+          activity_type: values.activity_type,
+          date: values.date,
+          location: values.location,
+          people_reached: parseInt(values.people_reached, 10) || 0,
+          pregnancies_identified: parseInt(values.pregnancies_identified, 10) || 0,
+          contraceptives_distributed: parseInt(values.contraceptives_distributed, 10) || 0,
+          screenings_done: parseInt(values.screenings_done, 10) || 0,
+          health_talks_given: parseInt(values.health_talks_given, 10) || 0,
+          description: values.notes
+        })
+        if (values.participant_ids.length) {
+          try {
+            await recordActivityParticipants(activity.id, values.participant_ids)
+          } catch (participantError) {
+            try {
+              await deleteActivity(activity.id)
+            } catch (cleanupError) {
+              throw new Error(
+                `Activity was saved, but participant linking failed: ${participantError.message}. `
+                + `Automatic cleanup also failed: ${cleanupError.message}`
+              )
+            }
+            throw participantError
+          }
+        }
         form.reset()
         onClose()
         onSuccess()
@@ -103,6 +134,7 @@ function LogActivityModal({ isOpen, organizationId, onClose, onSuccess }) {
           <select name="activity_type" value={form.values.activity_type} onChange={form.handleChange} className="w-full p-3 border rounded" required>
             <option value="clinic_visit">Clinic Visit</option>
             <option value="outreach">Outreach</option>
+            <option value="health_talk">Health Talk</option>
             <option value="training">Training</option>
             <option value="conference">Conference</option>
             <option value="other">Other</option>
@@ -120,7 +152,33 @@ function LogActivityModal({ isOpen, organizationId, onClose, onSuccess }) {
           <input type="number" name="people_reached" placeholder="People Reached" value={form.values.people_reached} onChange={form.handleChange} className="w-full p-3 border rounded" min="0" />
           <input type="number" name="pregnancies_identified" placeholder="Pregnancies Identified" value={form.values.pregnancies_identified} onChange={form.handleChange} className="w-full p-3 border rounded" min="0" />
           <input type="number" name="contraceptives_distributed" placeholder="Contraceptives Distributed" value={form.values.contraceptives_distributed} onChange={form.handleChange} className="w-full p-3 border rounded" min="0" />
+          <input type="number" name="screenings_done" placeholder="Screenings Done" value={form.values.screenings_done} onChange={form.handleChange} className="w-full p-3 border rounded" min="0" />
+          <input type="number" name="health_talks_given" placeholder="Health Talks Given" value={form.values.health_talks_given} onChange={form.handleChange} className="w-full p-3 border rounded" min="0" />
         </div>
+
+        <fieldset className="space-y-2">
+          <legend className="font-medium text-sm">Members who participated</legend>
+          <div className="max-h-40 overflow-y-auto space-y-2">
+            {members.map((member) => (
+              <label key={member.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.values.participant_ids.includes(member.id)}
+                  onChange={(event) => {
+                    const ids = form.values.participant_ids
+                    form.setFieldValue(
+                      'participant_ids',
+                      event.target.checked
+                        ? [...ids, member.id]
+                        : ids.filter((id) => id !== member.id)
+                    )
+                  }}
+                />
+                {member.name}
+              </label>
+            ))}
+          </div>
+        </fieldset>
 
         <textarea name="notes" placeholder="Additional notes (optional)" value={form.values.notes} onChange={form.handleChange} rows="3" className="w-full p-3 border rounded" />
 

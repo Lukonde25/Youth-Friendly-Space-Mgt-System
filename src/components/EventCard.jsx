@@ -22,13 +22,20 @@ const EventCard = ({
   onSendReminders,
   onCheckin,
   onDelete,
+  onCancel,
+  onViewMetrics,
   showActions = true,
+  showInvitationStats = true,
+  invitationActionLabel = 'Manage Invitations',
   ...props
 }) => {
   const eventDate = new Date(event.date);
   const isUpcoming = eventDate > new Date();
 
   const getStatusBadge = () => {
+    if (event.status === 'cancelled') {
+      return <Badge variant="warning">Cancelled</Badge>;
+    }
     if (isUpcoming) {
       return <Badge variant="info">Upcoming</Badge>;
     }
@@ -53,6 +60,9 @@ const EventCard = ({
       </div>
 
       <div className="space-y-2 mb-4">
+        {event.event_type && (
+          <p className="text-secondary m-0 capitalize">{event.event_type.replaceAll('_', ' ')}</p>
+        )}
         <p className="text-secondary m-0">
           <span className="font-medium">📅</span> {formatDate(eventDate)}
         </p>
@@ -65,30 +75,32 @@ const EventCard = ({
       </div>
 
       {/* Invitation Stats */}
-      <div className="grid grid-cols-3 gap-3 mb-4 p-3 bg-gray-50 rounded-md">
-        <div>
-          <div className="text-2xl font-bold text-primary">
-            {event.total_invited || 0}
+      {showInvitationStats && (
+        <div className="grid grid-cols-3 gap-3 mb-4 p-3 bg-gray-50 rounded-md">
+          <div>
+            <div className="text-2xl font-bold text-primary">
+              {event.total_invited || 0}
+            </div>
+            <div className="text-xs text-tertiary">Invited</div>
           </div>
-          <div className="text-xs text-tertiary">Invited</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-success">
-            {event.confirmed_count || 0}
+          <div>
+            <div className="text-2xl font-bold text-success">
+              {event.confirmed_count || 0}
+            </div>
+            <div className="text-xs text-tertiary">Confirmed</div>
           </div>
-          <div className="text-xs text-tertiary">Confirmed</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-info">
-            {event.attended_count || 0}
+          <div>
+            <div className="text-2xl font-bold text-info">
+              {event.attended_count || 0}
+            </div>
+            <div className="text-xs text-tertiary">Attended</div>
           </div>
-          <div className="text-xs text-tertiary">Attended</div>
         </div>
-      </div>
+      )}
 
       {showActions && (
         <div className="flex gap-2 flex-wrap">
-          {isUpcoming && (
+          {isUpcoming && event.status !== 'cancelled' && (
             <>
               {onSendReminders && (
                 <Button
@@ -96,7 +108,7 @@ const EventCard = ({
                   size="sm"
                   variant="secondary"
                 >
-                  Send Reminders
+                  {invitationActionLabel}
                 </Button>
               )}
               {onEdit && (
@@ -108,6 +120,15 @@ const EventCard = ({
                   Edit
                 </Button>
               )}
+              {onCancel && event.status !== 'cancelled' && (
+                <Button
+                  onClick={onCancel}
+                  size="sm"
+                  variant="danger"
+                >
+                  Cancel Event
+                </Button>
+              )}
             </>
           )}
           {!isUpcoming && onCheckin && (
@@ -117,6 +138,11 @@ const EventCard = ({
               variant="primary"
             >
               Record Attendance
+            </Button>
+          )}
+          {onViewMetrics && event.status !== 'cancelled' && (
+            <Button onClick={onViewMetrics} size="sm" variant="ghost">
+              Attendance & Metrics
             </Button>
           )}
           {onDelete && (

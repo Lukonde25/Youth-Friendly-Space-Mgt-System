@@ -3,48 +3,125 @@ import { supabase } from './supabaseClient'
 export const getDashboardData = async (organizationId) => {
   const today = new Date()
   const firstDay = new Date(today.getFullYear(), today.getMonth(), 1)
-  const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0)
-
+  const trendStart = new Date(today.getFullYear(), today.getMonth() - 5, 1)
   const startDate = firstDay.toISOString().split('T')[0]
-  const endDate = lastDay.toISOString().split('T')[0]
+  const trendStartDate = trendStart.toISOString().split('T')[0]
+  const todayDate = today.toISOString().split('T')[0]
 
-  const { data: activities } = await supabase
-    .from('activities')
-    .select('*')
-    .eq('organization_id', organizationId)
-    .gte('date', startDate)
-    .lte('date', endDate)
+  const [activityResult, memberResult, eventResult, upcomingResult] = await Promise.all([
+    supabase
+      .from('activities')
+      .select('id, activity_type, date, location, created_by, people_reached, pregnancies_identified, contraceptives_distributed, screenings_done, health_talks_given')
+      .eq('organization_id', organizationId)
+      .gte('date', trendStartDate)
+      .order('date', { ascending: false }),
+    supabase
+      .from('members')
+      .select('id', { count: 'exact', head: true })
+      .eq('organization_id', organizationId)
+      .eq('active', true),
+    supabase
+      .from('events')
+      .select('id, name, date, status')
+      .eq('organization_id', organizationId)
+      .gte('date', startDate)
+      .lte('date', todayDate),
+    supabase
+      .from('events')
+      .select('id, name, date, location, description, event_type')
+      .eq('organization_id', organizationId)
+      .eq('status', 'scheduled')
+      .gte('date', todayDate)
+      .order('date', { ascending: true })
+      .limit(5)
+  ])
 
-  const { data: members } = await supabase
-    .from('members')
-    .select('id')
-    .eq('organization_id', organizationId)
-    .eq('active', true)
+  for (const result of [activityResult, memberResult, eventResult, upcomingResult]) {
+    if (result.error) throw result.error
+  }
 
-  const { data: events } = await supabase
-    .from('events')
-    .select('*')
-    .eq('organization_id', organizationId)
-    .gte('date', startDate)
-    .lte('date', endDate)
+  const activities = activityResult.data || []
+  const thisMonthActivities = activities.filter((activity) => activity.date >= startDate)
+  const eventIds = (eventResult.data || []).map((event) => event.id)
+  let invitations = []
+  if (eventIds.length) {
+    const { data, error } = await supabase
+      .from('event_invitations')
+      .select('status')
+      .in('event_id', eventIds)
+      .eq('status', 'attended')
+    if (error) throw error
+    invitations = data || []
+  }
 
-  const { data: invitations } = await supabase
-    .from('event_invitations')
-    .select('status')
-    .eq('status', 'attended')
+  const monthlyActivityTrend = Array.from({ length: 6 }, (_, index) => {
+    const monthDate = new Date(today.getFullYear(), today.getMonth() - (5 - index), 1)
+    const key = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`
+    const monthActivities = activities.filter((activity) => activity.date.startsWith(key))
+    return {
+      month: monthDate.toLocaleString('default', { month: 'short' }),
+      count: monthActivities.length,
+      people_reached: monthActivities.reduce((sum, activity) => sum + (activity.people_reached || 0), 0)
+    }
+  })
+  const locationReach = Object.values(thisMonthActivities.reduce((locations, activity) => {
+    const location = activity.location?.trim() || 'Not specified'
+    if (!locations[location]) locations[location] = { location, activities: 0, people_reached: 0 }
+    locations[location].activities += 1
+    locations[location].people_reached += activity.people_reached || 0
+    return locations
+  }, {})).sort((a, b) => b.people_reached - a.people_reached).slice(0, 5)
+
+  const staffTotals = thisMonthActivities.reduce((staff, activity) => {
+    if (!activity.created_by) return staff
+    if (!staff[activity.created_by]) {
+      staff[activity.created_by] = { user_id: activity.created_by, activities: 0, people_reached: 0 }
+    }
+    staff[activity.created_by].activities += 1
+    staff[activity.created_by].people_reached += activity.people_reached || 0
+    return staff
+  }, {})
+  const staffIds = Object.keys(staffTotals).filter((id) => (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  ))
+  let topStaff = Object.values(staffTotals).sort((a, b) => b.people_reached - a.people_reached).slice(0, 5)
+  if (staffIds.length) {
+    const { data: staffProfiles, error: staffError } = await supabase
+      .from('users')
+      .select('id, full_name, email')
+      .in('id', staffIds)
+    if (staffError) throw staffError
+    const profileById = Object.fromEntries((staffProfiles || []).map((profile) => [profile.id, profile]))
+    topStaff = topStaff.map((staff) => ({
+      ...staff,
+      name: profileById[staff.user_id]?.full_name
+        || profileById[staff.user_id]?.email
+        || 'Coordinator'
+    }))
+  }
+  topStaff = topStaff.map((staff) => ({
+    ...staff,
+    name: staff.name || 'Coordinator'
+  }))
 
   const dashboard = {
     month: today.toLocaleString('default', { month: 'long', year: 'numeric' }),
-    people_reached: activities?.reduce((sum, a) => sum + (a.people_reached || 0), 0) || 0,
-    clinic_visits: activities?.filter(a => a.activity_type === 'clinic_visit').length || 0,
-    pregnancies_identified: activities?.reduce((sum, a) => sum + (a.pregnancies_identified || 0), 0) || 0,
-    contraceptives_distributed: activities?.reduce((sum, a) => sum + (a.contraceptives_distributed || 0), 0) || 0,
-    active_members: members?.length || 0,
-    events_count: events?.length || 0,
-    event_attendance: invitations?.length || 0,
-    total_activities: activities?.length || 0,
-    recent_activities: activities?.slice(0, 5) || [],
-    by_activity_type: getActivityBreakdown(activities)
+    people_reached: thisMonthActivities.reduce((sum, activity) => sum + (activity.people_reached || 0), 0),
+    clinic_visits: thisMonthActivities.filter((activity) => activity.activity_type === 'clinic_visit').length,
+    pregnancies_identified: thisMonthActivities.reduce((sum, activity) => sum + (activity.pregnancies_identified || 0), 0),
+    contraceptives_distributed: thisMonthActivities.reduce((sum, activity) => sum + (activity.contraceptives_distributed || 0), 0),
+    screenings_done: thisMonthActivities.reduce((sum, activity) => sum + (activity.screenings_done || 0), 0),
+    health_talks_given: thisMonthActivities.reduce((sum, activity) => sum + (activity.health_talks_given || 0), 0),
+    active_members: memberResult.count || 0,
+    events_count: (eventResult.data || []).length,
+    event_attendance: invitations.length,
+    total_activities: thisMonthActivities.length,
+    recent_activities: thisMonthActivities.slice(0, 5),
+    upcoming_events: upcomingResult.data || [],
+    monthly_activity_trend: monthlyActivityTrend,
+    location_reach: locationReach,
+    top_staff: topStaff,
+    by_activity_type: getActivityBreakdown(thisMonthActivities)
   }
 
   return dashboard

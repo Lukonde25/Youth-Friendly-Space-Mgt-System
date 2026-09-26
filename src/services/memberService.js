@@ -6,16 +6,18 @@
 
 import { supabase } from './supabaseClient'
 
-export const fetchMembers = async (organizationId) => {
-  const { data, error } = await supabase
+export const fetchMembers = async (organizationId, { includeInactive = false } = {}) => {
+  const query = supabase
     .from('members')
     .select('*')
     .eq('organization_id', organizationId)
-    .eq('active', true)
+  if (!includeInactive) query.eq('active', true)
+
+  const { data: members, error: membersError } = await query
     .order('name', { ascending: true })
 
-  if (error) throw error
-  return data
+  if (membersError) throw membersError
+  return members
 }
 
 export const fetchMember = async (memberId) => {
@@ -60,15 +62,10 @@ export const updateMember = async (memberId, memberData) => {
 }
 
 export const deactivateMember = async (memberId) => {
-  const { data, error } = await supabase
-    .from('members')
-    .update({ active: false })
-    .eq('id', memberId)
-    .select()
-    .single()
-
+  const { error } = await supabase.rpc('deactivate_member', {
+    requested_member_id: memberId
+  })
   if (error) throw error
-  return data
 }
 
 export const getMemberStats = async (memberId) => {
@@ -83,11 +80,35 @@ export const getMemberStats = async (memberId) => {
     .select('*')
     .eq('member_id', memberId)
 
-  if (eventError || activityError) throw new Error('Error fetching stats')
+  if (eventError) throw eventError
+  if (activityError) throw activityError
 
   return {
     events_attended: eventData?.length || 0,
     activities_participated: activityData?.length || 0
+  }
+}
+
+export const getMemberEngagementHistory = async (memberId) => {
+  const [eventResult, activityResult] = await Promise.all([
+    supabase
+      .from('event_invitations')
+      .select('id, status, events(name, date, location)')
+      .eq('member_id', memberId)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('activity_participants')
+      .select('id, activities(activity_type, date, location)')
+      .eq('member_id', memberId)
+      .order('created_at', { ascending: false })
+  ])
+
+  if (eventResult.error) throw eventResult.error
+  if (activityResult.error) throw activityResult.error
+
+  return {
+    events: eventResult.data || [],
+    activities: activityResult.data || []
   }
 }
 

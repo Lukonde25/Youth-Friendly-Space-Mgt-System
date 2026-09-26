@@ -29,5 +29,5 @@ export { default as MainLayout } from './MainLayout';
 export { default as Modal } from './Modal';
 
 // Feature Components
-export { default as MemberCard } from './MemberCard';
+export { default as MemberCard } from '../componentsMember/Card';
 export { default as EventCard } from './EventCard';

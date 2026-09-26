@@ -1,4 +1,4 @@
-src/components//**
+/**
  * Select Component
  * 
  * Usage:

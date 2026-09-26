@@ -13,13 +13,14 @@
  */
 
 import React from 'react';
-import Badge from './Badge';
-import Button from './Button';
+import Badge from '../components/Badge';
+import Button from '../components/Button';
 
 const MemberCard = ({
   member,
   onEdit,
   onRemove,
+  onHistory,
   onSelect,
   selected = false,
   showActions = true,
@@ -69,6 +70,21 @@ const MemberCard = ({
             <p className="text-secondary m-0">
               <span className="text-tertiary">Phone:</span> {member.phone}
             </p>
+            {member.email && (
+              <p className="text-secondary m-0">
+                <span className="text-tertiary">Email:</span> {member.email}
+              </p>
+            )}
+            {member.age && (
+              <p className="text-secondary m-0">
+                <span className="text-tertiary">Age:</span> {member.age}
+              </p>
+            )}
+            {member.health_info && (
+              <p className="text-secondary m-0">
+                <span className="text-tertiary">Health information:</span> {member.health_info}
+              </p>
+            )}
             <p className="text-secondary m-0">
               <span className="text-tertiary">Joined:</span>{' '}
               {new Date(member.date_joined).toLocaleDateString()}
@@ -88,6 +104,11 @@ const MemberCard = ({
 
           {showActions && (
             <div className="flex gap-2">
+              {onHistory && (
+                <Button onClick={onHistory} size="sm" variant="ghost">
+                  Engagement
+                </Button>
+              )}
               {onEdit && (
                 <Button
                   onClick={onEdit}

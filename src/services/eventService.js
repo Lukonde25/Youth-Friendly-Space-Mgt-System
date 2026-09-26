@@ -58,6 +58,14 @@ export const deleteEvent = async (eventId) => {
   if (error) throw error
 }
 
+export const cancelEvent = async (eventId) => {
+  const { error } = await supabase
+    .from('events')
+    .update({ status: 'cancelled' })
+    .eq('id', eventId)
+  if (error) throw error
+}
+
 export const inviteMembers = async (eventId, memberIds) => {
   const invitations = memberIds.map(memberId => ({
     event_id: eventId,
@@ -110,6 +118,7 @@ export const fetchUpcomingEvents = async (organizationId, limit = 5) => {
     .from('events')
     .select('*')
     .eq('organization_id', organizationId)
+    .eq('status', 'scheduled')
     .gte('date', today)
     .order('date', { ascending: true })
     .limit(limit)

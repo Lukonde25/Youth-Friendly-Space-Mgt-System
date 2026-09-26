@@ -1,8 +1,17 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Modal, Alert, EventCard } from '../components'
 import { useForm } from '../hooks/useForm'
-import { fetchEvents, createEvent, deleteEvent, inviteMembers } from '../services/eventService'
+import {
+  fetchEvents,
+  createEvent,
+  deleteEvent,
+  cancelEvent,
+  inviteMembers,
+  fetchEventInvitations,
+  updateInvitationStatus
+} from '../services/eventService'
 import { fetchMembers } from '../services/memberService'
+import { fetchEventFeedback } from '../services/eventFeedbackService'
 
 export default function EventsPage({ organizationId }) {
   const [events, setEvents] = useState([])
@@ -12,6 +21,7 @@ export default function EventsPage({ organizationId }) {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [selectedEvent, setSelectedEvent] = useState(null)
   const [showInviteForm, setShowInviteForm] = useState(false)
+  const [showAttendance, setShowAttendance] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -45,6 +55,16 @@ export default function EventsPage({ organizationId }) {
     }
   }
 
+  const handleCancelEvent = async (event) => {
+    if (!window.confirm(`Cancel "${event.name}"? Members will still be able to see that it was cancelled.`)) return
+    try {
+      await cancelEvent(event.id)
+      await loadData()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   if (loading) return <div className="p-6 text-center text-secondary">Loading events...</div>
 
   return (
@@ -58,7 +78,16 @@ export default function EventsPage({ organizationId }) {
       {events.length > 0 ? (
         <div className="grid grid-2 gap-6">
           {events.map(event => (
-            <EventCard key={event.id} event={event} onDelete={() => handleDeleteEvent(event.id)} onSendReminders={() => { setSelectedEvent(event); setShowInviteForm(true) }} showActions={true} />
+            <EventCard
+              key={event.id}
+              event={event}
+              onDelete={() => handleDeleteEvent(event.id)}
+              onCancel={() => handleCancelEvent(event)}
+              onSendReminders={() => { setSelectedEvent(event); setShowInviteForm(true) }}
+              onViewMetrics={() => { setSelectedEvent(event); setShowAttendance(true) }}
+              invitationActionLabel="Invite Members"
+              showActions={true}
+            />
           ))}
         </div>
       ) : (
@@ -73,7 +102,14 @@ export default function EventsPage({ organizationId }) {
       <CreateEventModal isOpen={showCreateForm} organizationId={organizationId} onClose={() => setShowCreateForm(false)} onSuccess={loadData} />
 
       {selectedEvent && (
-        <InviteMembersModal isOpen={showInviteForm} event={selectedEvent} members={members} onClose={() => { setShowInviteForm(false); setSelectedEvent(null) }} onSuccess={loadData} />
+        <>
+          <InviteMembersModal isOpen={showInviteForm} event={selectedEvent} members={members} onClose={() => { setShowInviteForm(false); setSelectedEvent(null) }} onSuccess={loadData} />
+          <EventAttendanceModal
+            isOpen={showAttendance}
+            event={selectedEvent}
+            onClose={() => { setShowAttendance(false); setSelectedEvent(null) }}
+          />
+        </>
       )}
     </div>
   )
@@ -83,7 +119,7 @@ function CreateEventModal({ isOpen, organizationId, onClose, onSuccess }) {
   const [submitError, setSubmitError] = useState(null)
 
   const form = useForm(
-    { name: '', date: '', location: '', description: '', capacity: '' },
+    { name: '', event_type: 'health_talk', date: '', location: '', description: '', capacity: '' },
     async (values) => {
       try {
         setSubmitError(null)
@@ -102,6 +138,13 @@ function CreateEventModal({ isOpen, organizationId, onClose, onSuccess }) {
       {submitError && <Alert variant="error" className="mb-4" onDismiss={() => setSubmitError(null)}>{submitError}</Alert>}
       <form onSubmit={form.handleSubmit} className="space-y-4">
         <input type="text" name="name" placeholder="Event Name" value={form.values.name} onChange={form.handleChange} required className="w-full p-3 border rounded" />
+        <select name="event_type" value={form.values.event_type} onChange={form.handleChange} className="w-full p-3 border rounded" required>
+          <option value="health_talk">Health talk</option>
+          <option value="clinic_visit">Clinic visit</option>
+          <option value="outreach">Outreach</option>
+          <option value="training">Training</option>
+          <option value="other">Other</option>
+        </select>
         <input type="datetime-local" name="date" value={form.values.date} onChange={form.handleChange} required className="w-full p-3 border rounded" />
         <input type="text" name="location" placeholder="Location" value={form.values.location} onChange={form.handleChange} className="w-full p-3 border rounded" />
         <input type="number" name="capacity" placeholder="Expected Attendees (optional)" value={form.values.capacity} onChange={form.handleChange} className="w-full p-3 border rounded" />
@@ -111,6 +154,101 @@ function CreateEventModal({ isOpen, organizationId, onClose, onSuccess }) {
           <Button type="submit" loading={form.loading}>Create Event</Button>
         </div>
       </form>
+    </Modal>
+  )
+}
+
+function EventAttendanceModal({ isOpen, event, onClose }) {
+  const [invitations, setInvitations] = useState([])
+  const [feedback, setFeedback] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [updatingId, setUpdatingId] = useState(null)
+
+  const loadInvitations = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const [invitationData, feedbackData] = await Promise.all([
+        fetchEventInvitations(event.id),
+        fetchEventFeedback(event.id)
+      ])
+      setInvitations(invitationData || [])
+      setFeedback(feedbackData || [])
+    } catch (loadError) {
+      setError(loadError.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (isOpen) loadInvitations()
+  }, [event.id, isOpen])
+
+  const setAttendance = async (invitation, status) => {
+    try {
+      setUpdatingId(invitation.id)
+      setError(null)
+      await updateInvitationStatus(invitation.id, status)
+      await loadInvitations()
+    } catch (updateError) {
+      setError(updateError.message)
+    } finally {
+      setUpdatingId(null)
+    }
+  }
+
+  const confirmed = invitations.filter((invitation) => invitation.status === 'confirmed').length
+  const attended = invitations.filter((invitation) => invitation.status === 'attended').length
+  const attendanceRate = invitations.length ? Math.round(attended / invitations.length * 100) : 0
+  const averageRating = feedback.length
+    ? (feedback.reduce((sum, item) => sum + item.rating, 0) / feedback.length).toFixed(1)
+    : '—'
+
+  return (
+    <Modal isOpen={isOpen} title={`Attendance: ${event.name}`} onClose={onClose} size="lg">
+      {error && <Alert variant="error" className="mb-4">{error}</Alert>}
+      <div className="grid grid-3 gap-3 mb-6">
+        <Card className="text-center"><strong>{invitations.length}</strong><p className="text-sm text-secondary">Invited</p></Card>
+        <Card className="text-center"><strong>{confirmed}</strong><p className="text-sm text-secondary">Confirmed</p></Card>
+        <Card className="text-center"><strong>{attendanceRate}%</strong><p className="text-sm text-secondary">Attendance</p></Card>
+      </div>
+      <Card>
+        <h3>Feedback · {averageRating}{averageRating !== '—' ? '/5' : ''}</h3>
+        {feedback.length ? feedback.map((item) => (
+          <div key={item.id} className="border-t py-3">
+            <p className="font-medium">{item.members?.name || 'Member'} · {item.rating}/5</p>
+            <p className="text-sm text-secondary">{item.feedback}</p>
+          </div>
+        )) : <p className="text-secondary">No feedback submitted yet.</p>}
+      </Card>
+      {loading ? <p className="text-secondary">Loading invitations...</p> : invitations.length ? (
+        <div className="space-y-3 max-h-96 overflow-y-auto">
+          {invitations.map((invitation) => (
+            <div key={invitation.id} className="flex-between gap-3 border rounded p-3">
+              <div>
+                <p className="font-medium">{invitation.members?.name || 'Member'}</p>
+                <p className="text-sm text-secondary">{invitation.status}</p>
+              </div>
+              <Button
+                size="sm"
+                variant={invitation.status === 'attended' ? 'success' : 'secondary'}
+                loading={updatingId === invitation.id}
+                disabled={invitation.status === 'attended'}
+                onClick={() => setAttendance(invitation, 'attended')}
+              >
+                {invitation.status === 'attended' ? 'Attended' : 'Mark attended'}
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-secondary">No members have been invited to this event yet.</p>
+      )}
+      <div className="mt-6">
+        <Button variant="secondary" onClick={onClose}>Close</Button>
+      </div>
     </Modal>
   )
 }
