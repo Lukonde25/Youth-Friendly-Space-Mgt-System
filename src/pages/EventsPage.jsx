@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, Card, Modal, Alert, EventCard } from '../components'
 import { useForm } from '../hooks/useForm'
 import {
@@ -10,15 +10,13 @@ import {
   fetchEventInvitations,
   updateInvitationStatus
 } from '../services/eventService'
-import { fetchMembers } from '../services/memberService'
+import { getAvailableMembersForEvent } from '../services/memberService'
 import { fetchEventFeedback } from '../services/eventFeedbackService'
 
-export default function EventsPage({ organizationId }) {
+export default function EventsPage({ organizationId, userId }) {
   const [events, setEvents] = useState([])
-  const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [showCreateForm, setShowCreateForm] = useState(false)
   const [selectedEvent, setSelectedEvent] = useState(null)
   const [showInviteForm, setShowInviteForm] = useState(false)
   const [showAttendance, setShowAttendance] = useState(false)
@@ -31,12 +29,8 @@ export default function EventsPage({ organizationId }) {
     try {
       setLoading(true)
       setError(null)
-      const [eventsData, membersData] = await Promise.all([
-        fetchEvents(organizationId),
-        fetchMembers(organizationId)
-      ])
+      const eventsData = await fetchEvents(organizationId)
       setEvents(eventsData || [])
-      setMembers(membersData || [])
     } catch (err) {
       setError(err.message)
     } finally {
@@ -47,11 +41,13 @@ export default function EventsPage({ organizationId }) {
   const handleDeleteEvent = async (eventId) => {
     if (!confirm('Delete this event?')) return
     try {
-      await deleteEvent(eventId)
+      const event = events.find((item) => item.id === eventId)
+      await deleteEvent(eventId, event?.cover_image_path)
       setSelectedEvent(null)
       await loadData()
     } catch (err) {
       setError(err.message)
+      if (err.message.startsWith('The event was deleted,')) await loadData()
     }
   }
 
@@ -70,10 +66,12 @@ export default function EventsPage({ organizationId }) {
   return (
     <div className="space-y-6">
       {error && <Alert variant="error" onDismiss={() => setError(null)}>{error}</Alert>}
-      <div className="flex-between">
+      <div>
         <h2 className="text-2xl font-bold">Events</h2>
-        <Button onClick={() => setShowCreateForm(true)}>+ Create Event</Button>
+        <p className="text-secondary">Create an event announcement for your centre and manage upcoming events.</p>
       </div>
+
+      <CreateEventForm organizationId={organizationId} userId={userId} onSuccess={loadData} />
 
       {events.length > 0 ? (
         <div className="grid grid-2 gap-6">
@@ -94,16 +92,19 @@ export default function EventsPage({ organizationId }) {
         <Card className="text-center py-12">
           <div className="mb-4 text-4xl">📅</div>
           <h3>No Events Yet</h3>
-          <p className="text-secondary mb-4">Create your first event to coordinate activities</p>
-          <Button onClick={() => setShowCreateForm(true)}>Create First Event</Button>
+          <p className="text-secondary mb-4">Your events will appear here after you create one.</p>
         </Card>
       )}
 
-      <CreateEventModal isOpen={showCreateForm} organizationId={organizationId} onClose={() => setShowCreateForm(false)} onSuccess={loadData} />
-
       {selectedEvent && (
         <>
-          <InviteMembersModal isOpen={showInviteForm} event={selectedEvent} members={members} onClose={() => { setShowInviteForm(false); setSelectedEvent(null) }} onSuccess={loadData} />
+          <InviteMembersModal
+            isOpen={showInviteForm}
+            event={selectedEvent}
+            organizationId={organizationId}
+            onClose={() => { setShowInviteForm(false); setSelectedEvent(null) }}
+            onSuccess={loadData}
+          />
           <EventAttendanceModal
             isOpen={showAttendance}
             event={selectedEvent}
@@ -115,17 +116,35 @@ export default function EventsPage({ organizationId }) {
   )
 }
 
-function CreateEventModal({ isOpen, organizationId, onClose, onSuccess }) {
+function CreateEventForm({ organizationId, userId, onSuccess }) {
   const [submitError, setSubmitError] = useState(null)
+  const [coverFile, setCoverFile] = useState(null)
+  const [coverPreviewUrl, setCoverPreviewUrl] = useState(null)
+  const coverInputRef = useRef(null)
+
+  useEffect(() => {
+    if (!coverFile) {
+      setCoverPreviewUrl(null)
+      return undefined
+    }
+    const previewUrl = URL.createObjectURL(coverFile)
+    setCoverPreviewUrl(previewUrl)
+    return () => URL.revokeObjectURL(previewUrl)
+  }, [coverFile])
 
   const form = useForm(
     { name: '', event_type: 'health_talk', date: '', location: '', description: '', capacity: '' },
     async (values) => {
       try {
         setSubmitError(null)
-        await createEvent(organizationId, { ...values, capacity: parseInt(values.capacity) || null })
+        await createEvent(organizationId, userId, {
+          ...values,
+          capacity: parseInt(values.capacity, 10) || null,
+          coverFile
+        })
         form.reset()
-        onClose()
+        setCoverFile(null)
+        if (coverInputRef.current) coverInputRef.current.value = ''
         onSuccess()
       } catch (err) {
         setSubmitError(err.message)
@@ -134,27 +153,116 @@ function CreateEventModal({ isOpen, organizationId, onClose, onSuccess }) {
   )
 
   return (
-    <Modal isOpen={isOpen} title="Create New Event" onClose={onClose} size="lg">
+    <Card className="post-composer content-page-composer">
+      <div className="post-composer-heading">
+        <div>
+          <h3>Create a new event</h3>
+          <p className="text-secondary">Create an event announcement with the same cover-first layout as a post.</p>
+        </div>
+        <span className="post-composer-step">1 · Event details</span>
+      </div>
       {submitError && <Alert variant="error" className="mb-4" onDismiss={() => setSubmitError(null)}>{submitError}</Alert>}
-      <form onSubmit={form.handleSubmit} className="space-y-4">
-        <input type="text" name="name" placeholder="Event Name" value={form.values.name} onChange={form.handleChange} required className="w-full p-3 border rounded" />
-        <select name="event_type" value={form.values.event_type} onChange={form.handleChange} className="w-full p-3 border rounded" required>
-          <option value="health_talk">Health talk</option>
-          <option value="clinic_visit">Clinic visit</option>
-          <option value="outreach">Outreach</option>
-          <option value="training">Training</option>
-          <option value="other">Other</option>
-        </select>
-        <input type="datetime-local" name="date" value={form.values.date} onChange={form.handleChange} required className="w-full p-3 border rounded" />
-        <input type="text" name="location" placeholder="Location" value={form.values.location} onChange={form.handleChange} className="w-full p-3 border rounded" />
-        <input type="number" name="capacity" placeholder="Expected Attendees (optional)" value={form.values.capacity} onChange={form.handleChange} className="w-full p-3 border rounded" />
-        <textarea name="description" placeholder="Event Description" value={form.values.description} onChange={form.handleChange} rows="3" className="w-full p-3 border rounded" />
-        <div className="flex gap-3 mt-6">
-          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+      <form onSubmit={form.handleSubmit} className="content-compose-form">
+        <div className="content-compose-intro">
+          <span className="content-compose-icon" aria-hidden="true">✦</span>
+          <div>
+            <h3>Design your event announcement</h3>
+            <p className="text-secondary">Add a cover and details. Members see the title and a short description on the image.</p>
+          </div>
+        </div>
+        <section className="content-compose-section">
+          <div className="post-composer-heading">
+            <div><h4>Event cover</h4><p className="text-secondary">The event name and description appear over this image.</p></div>
+            <span className="post-composer-step">01 · Cover</span>
+          </div>
+          <label className="content-compose-field">
+            <span>Event name</span>
+            <input type="text" name="name" placeholder="Give your event a clear title" value={form.values.name} onChange={form.handleChange} required maxLength="160" />
+          </label>
+          <label className="content-compose-field">
+            <span>Description</span>
+            <textarea name="description" placeholder="What should members know about this event?" value={form.values.description} onChange={form.handleChange} rows="3" maxLength="10000" />
+          </label>
+          <div className="content-compose-image-row">
+            <label className="post-image-select">
+              <input
+                type="file"
+                ref={coverInputRef}
+                accept="image/*"
+                aria-label="Choose event cover image"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] || null
+                  if (file && (!file.type.startsWith('image/') || file.size > 12 * 1024 * 1024)) {
+                    setSubmitError(file.size > 12 * 1024 * 1024
+                      ? 'Choose an image under 12 MB.'
+                      : 'Choose an image file for the event cover.')
+                    event.target.value = ''
+                    return
+                  }
+                  setSubmitError(null)
+                  setCoverFile(file)
+                }}
+              />
+              <span aria-hidden="true">＋</span>
+              <span>{coverFile ? 'Choose another image' : 'Choose cover image'}</span>
+            </label>
+            {coverFile && (
+              <button
+                type="button"
+                className="content-compose-remove-image"
+                onClick={() => {
+                  setCoverFile(null)
+                  if (coverInputRef.current) coverInputRef.current.value = ''
+                }}
+              >
+                Remove image
+              </button>
+            )}
+          </div>
+          <div className={`post-compose-preview content-compose-preview${coverPreviewUrl ? ' has-image' : ''}`}>
+            {coverPreviewUrl && <img src={coverPreviewUrl} alt="" />}
+            <span className="organization-post-cover-shade" aria-hidden="true" />
+            <div className="post-compose-preview-copy">
+              <strong>{form.values.name || 'Your event title'}</strong>
+              <p>{form.values.description || 'Your event description will appear here.'}</p>
+            </div>
+          </div>
+        </section>
+        <section className="content-compose-section">
+          <div className="post-composer-heading">
+            <div><h4>Event details</h4><p className="text-secondary">Help members plan to take part.</p></div>
+            <span className="post-composer-step">02 · Details</span>
+          </div>
+          <div className="content-compose-fields-grid">
+            <label className="content-compose-field">
+              <span>Event type</span>
+              <select name="event_type" value={form.values.event_type} onChange={form.handleChange} required>
+                <option value="health_talk">Health talk</option>
+                <option value="clinic_visit">Clinic visit</option>
+                <option value="outreach">Outreach</option>
+                <option value="training">Training</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label className="content-compose-field">
+              <span>Date and time</span>
+              <input type="datetime-local" name="date" value={form.values.date} onChange={form.handleChange} required />
+            </label>
+            <label className="content-compose-field">
+              <span>Location</span>
+              <input type="text" name="location" placeholder="Where is it happening?" value={form.values.location} onChange={form.handleChange} />
+            </label>
+            <label className="content-compose-field">
+              <span>Expected attendees <small>Optional</small></span>
+              <input type="number" name="capacity" placeholder="No limit" value={form.values.capacity} onChange={form.handleChange} min="1" />
+            </label>
+          </div>
+        </section>
+        <div className="content-compose-actions">
           <Button type="submit" loading={form.loading}>Create Event</Button>
         </div>
       </form>
-    </Modal>
+    </Card>
   )
 }
 
@@ -253,13 +361,42 @@ function EventAttendanceModal({ isOpen, event, onClose }) {
   )
 }
 
-function InviteMembersModal({ isOpen, event, members, onClose, onSuccess }) {
+function InviteMembersModal({ isOpen, event, organizationId, onClose, onSuccess }) {
+  const [members, setMembers] = useState([])
   const [selectedMembers, setSelectedMembers] = useState([])
+  const [loadingMembers, setLoadingMembers] = useState(false)
   const [inviting, setInviting] = useState(false)
   const [error, setError] = useState(null)
 
+  useEffect(() => {
+    if (!isOpen) return undefined
+
+    let isMounted = true
+    const loadAvailableMembers = async () => {
+      try {
+        setLoadingMembers(true)
+        setError(null)
+        setSelectedMembers([])
+        const availableMembers = await getAvailableMembersForEvent(organizationId, event.id)
+        if (isMounted) setMembers(availableMembers)
+      } catch (loadError) {
+        if (isMounted) setError(loadError.message)
+      } finally {
+        if (isMounted) setLoadingMembers(false)
+      }
+    }
+
+    loadAvailableMembers()
+    return () => {
+      isMounted = false
+    }
+  }, [event.id, isOpen, organizationId])
+
   const handleInvite = async () => {
-    if (selectedMembers.length === 0) return
+    if (selectedMembers.length === 0) {
+      setError('Select at least one member who has not already been invited.')
+      return
+    }
     try {
       setInviting(true)
       setError(null)
@@ -275,22 +412,46 @@ function InviteMembersModal({ isOpen, event, members, onClose, onSuccess }) {
   }
 
   return (
-    <Modal isOpen={isOpen} title={`Invite Members to ${event.name}`} onClose={onClose} size="lg">
+    <Modal isOpen={isOpen} title={`Invite Participants · ${event.name}`} onClose={onClose} size="lg">
       {error && <Alert variant="error" className="mb-4" onDismiss={() => setError(null)}>{error}</Alert>}
-      <div className="space-y-3 mb-6 max-h-96 overflow-y-auto">
-        {members.map(member => (
-          <label key={member.id} className="flex items-center p-3 border rounded hover:bg-gray-50">
-            <input type="checkbox" checked={selectedMembers.includes(member.id)} onChange={(e) => { if (e.target.checked) { setSelectedMembers([...selectedMembers, member.id]) } else { setSelectedMembers(selectedMembers.filter(id => id !== member.id)) } }} className="mr-3" />
-            <div className="flex-1">
-              <p className="font-medium">{member.name}</p>
-              <p className="text-sm text-secondary">{member.phone}</p>
-            </div>
-          </label>
-        ))}
+      <div className="invite-participants-description">
+        <p>Select active members who have not already been invited to this event.</p>
+        {!loadingMembers && members.length > 0 && (
+          <span>{selectedMembers.length} selected · {members.length} available</span>
+        )}
       </div>
+      {loadingMembers ? (
+        <p className="text-secondary">Loading available members...</p>
+      ) : members.length ? (
+        <div className="invite-participants-list">
+          {members.map((member) => (
+            <label key={member.id} className="invite-participant-option">
+              <input
+                type="checkbox"
+                checked={selectedMembers.includes(member.id)}
+                onChange={(event) => {
+                  setSelectedMembers((current) => (
+                    event.target.checked
+                      ? [...current, member.id]
+                      : current.filter((id) => id !== member.id)
+                  ))
+                }}
+              />
+              <span className="invite-participant-copy">
+                <strong>{member.name}</strong>
+                {member.phone && <small>{member.phone}</small>}
+              </span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p className="invite-participants-empty">There are no active members available to invite for this event.</p>
+      )}
       <div className="flex gap-3">
         <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button onClick={handleInvite} loading={inviting} disabled={selectedMembers.length === 0}>Send Invitations ({selectedMembers.length})</Button>
+        <Button onClick={handleInvite} loading={inviting} disabled={loadingMembers || members.length === 0 || selectedMembers.length === 0}>
+          Send Invitations ({selectedMembers.length})
+        </Button>
       </div>
     </Modal>
   )

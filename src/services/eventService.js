@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { attachSignedCoverUrls, removeCoverImage, uploadCoverImage } from './postService'
 
 export const fetchEvents = async (organizationId) => {
   const { data, error } = await supabase
@@ -7,7 +8,7 @@ export const fetchEvents = async (organizationId) => {
     .eq('organization_id', organizationId)
     .order('date', { ascending: false })
   if (error) throw error
-  return data
+  return attachSignedCoverUrls(data || [])
 }
 
 export const fetchEvent = async (eventId) => {
@@ -29,17 +30,33 @@ export const fetchEvent = async (eventId) => {
     attended: invitations?.filter(i => i.status === 'attended').length || 0
   }
 
-  return { ...data, ...stats }
+  return (await attachSignedCoverUrls([{ ...data, ...stats }]))[0]
 }
 
-export const createEvent = async (organizationId, eventData) => {
+export const createEvent = async (organizationId, userId, eventData) => {
+  const { coverFile, ...fields } = eventData
+  const coverImagePath = await uploadCoverImage(organizationId, userId, coverFile)
   const { data, error } = await supabase
     .from('events')
-    .insert([{ organization_id: organizationId, ...eventData, created_at: new Date().toISOString() }])
+    .insert([{
+      organization_id: organizationId,
+      ...fields,
+      cover_image_path: coverImagePath,
+      created_at: new Date().toISOString()
+    }])
     .select()
     .single()
-  if (error) throw error
-  return data
+  if (error) {
+    if (coverImagePath) {
+      try {
+        await removeCoverImage(coverImagePath)
+      } catch (cleanupError) {
+        console.error('Could not remove event cover after event creation failed:', cleanupError)
+      }
+    }
+    throw error
+  }
+  return (await attachSignedCoverUrls([data]))[0]
 }
 
 export const updateEvent = async (eventId, eventData) => {
@@ -50,12 +67,19 @@ export const updateEvent = async (eventId, eventData) => {
     .select()
     .single()
   if (error) throw error
-  return data
+  return (await attachSignedCoverUrls([data]))[0]
 }
 
-export const deleteEvent = async (eventId) => {
+export const deleteEvent = async (eventId, coverImagePath) => {
   const { error } = await supabase.from('events').delete().eq('id', eventId)
   if (error) throw error
+  if (coverImagePath) {
+    try {
+      await removeCoverImage(coverImagePath)
+    } catch (cleanupError) {
+      throw new Error(`The event was deleted, but its cover image could not be removed: ${cleanupError.message}`)
+    }
+  }
 }
 
 export const cancelEvent = async (eventId) => {
@@ -67,7 +91,20 @@ export const cancelEvent = async (eventId) => {
 }
 
 export const inviteMembers = async (eventId, memberIds) => {
-  const invitations = memberIds.map(memberId => ({
+  if (!memberIds.length) return []
+
+  const { data: existingInvitations, error: existingError } = await supabase
+    .from('event_invitations')
+    .select('member_id')
+    .eq('event_id', eventId)
+    .in('member_id', memberIds)
+  if (existingError) throw existingError
+
+  const alreadyInvitedIds = new Set((existingInvitations || []).map(({ member_id }) => member_id))
+  const newMemberIds = memberIds.filter((memberId) => !alreadyInvitedIds.has(memberId))
+  if (!newMemberIds.length) return []
+
+  const invitations = newMemberIds.map(memberId => ({
     event_id: eventId,
     member_id: memberId,
     status: 'invited',
@@ -123,7 +160,7 @@ export const fetchUpcomingEvents = async (organizationId, limit = 5) => {
     .order('date', { ascending: true })
     .limit(limit)
   if (error) throw error
-  return data
+  return attachSignedCoverUrls(data || [])
 }
 
 export const fetchPastEvents = async (organizationId, limit = 10) => {
@@ -136,5 +173,5 @@ export const fetchPastEvents = async (organizationId, limit = 10) => {
     .order('date', { ascending: false })
     .limit(limit)
   if (error) throw error
-  return data
+  return attachSignedCoverUrls(data || [])
 }

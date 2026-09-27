@@ -62,11 +62,13 @@ where u.member_id = m.id
 
 alter table public.events
   add column if not exists event_type text,
-  add column if not exists status text not null default 'scheduled';
+  add column if not exists status text not null default 'scheduled',
+  add column if not exists cover_image_path text;
 
 alter table public.activities
   add column if not exists screenings_done integer not null default 0,
-  add column if not exists health_talks_given integer not null default 0;
+  add column if not exists health_talks_given integer not null default 0,
+  add column if not exists cover_image_path text;
 
 create table if not exists public.organization_posts (
   id uuid primary key default gen_random_uuid(),
@@ -74,13 +76,56 @@ create table if not exists public.organization_posts (
   author_id uuid references public.users(id) on delete set null,
   title text not null check (char_length(btrim(title)) between 1 and 160),
   body text not null check (char_length(btrim(body)) > 0),
+  cover_image_path text,
   created_at timestamptz not null default now()
 );
+
+alter table public.organization_posts
+  add column if not exists cover_image_path text;
 
 create index if not exists organization_posts_feed_idx
   on public.organization_posts (organization_id, created_at desc);
 grant select, insert, delete on public.organization_posts to authenticated;
 grant select (id, name) on public.organizations to anon, authenticated;
+
+create table if not exists public.organization_post_reactions (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.organization_posts(id) on delete cascade,
+  user_id uuid not null references public.users(id) on delete cascade,
+  reaction text not null default 'love' check (reaction = 'love'),
+  created_at timestamptz not null default now(),
+  unique (post_id, user_id)
+);
+
+create table if not exists public.organization_post_views (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.organization_posts(id) on delete cascade,
+  user_id uuid not null references public.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (post_id, user_id)
+);
+
+create index if not exists organization_post_reactions_post_idx
+  on public.organization_post_reactions (post_id);
+create index if not exists organization_post_views_post_idx
+  on public.organization_post_views (post_id);
+revoke all on public.organization_post_reactions, public.organization_post_views from public, anon;
+grant select, insert, delete on public.organization_post_reactions to authenticated;
+grant select, insert on public.organization_post_views to authenticated;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'organization-post-covers',
+  'organization-post-covers',
+  false,
+  2097152,
+  array['image/jpeg', 'image/webp']
+)
+on conflict (id) do update
+set name = excluded.name,
+    public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
 
 create table if not exists public.event_feedback (
   id uuid primary key default gen_random_uuid(),
@@ -95,6 +140,40 @@ create table if not exists public.event_feedback (
 create index if not exists event_feedback_event_idx
   on public.event_feedback (event_id, created_at desc);
 grant select, insert on public.event_feedback to authenticated;
+
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  recipient_id uuid not null references public.users(id) on delete cascade,
+  request_user_id uuid not null references public.users(id) on delete cascade,
+  notification_type text not null check (notification_type = 'member_request'),
+  title text not null,
+  body text not null,
+  created_at timestamptz not null default now(),
+  read_at timestamptz,
+  unique (recipient_id, request_user_id, notification_type)
+);
+
+create index if not exists notifications_recipient_created_idx
+  on public.notifications (recipient_id, created_at desc);
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_publication
+    where pubname = 'supabase_realtime'
+  ) and not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'notifications'
+  ) then
+    execute 'alter publication supabase_realtime add table public.notifications';
+  end if;
+end;
+$$;
 
 create or replace function public.handle_new_auth_user()
 returns trigger
@@ -181,6 +260,73 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_auth_user();
+
+create or replace function public.notify_center_admin_of_member_request()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.app_role = 'member' and new.approval_status = 'pending' then
+    insert into public.notifications (
+      organization_id,
+      recipient_id,
+      request_user_id,
+      notification_type,
+      title,
+      body
+    )
+    select
+      new.organization_id,
+      admin.id,
+      new.id,
+      'member_request',
+      'New membership request',
+      coalesce(nullif(btrim(new.full_name), ''), new.email)
+        || ' requested to join your friendly space.'
+    from public.users admin
+    where admin.organization_id = new.organization_id
+      and admin.app_role = 'center_admin'
+      and admin.approval_status = 'approved'
+    on conflict (recipient_id, request_user_id, notification_type) do nothing;
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.notify_center_admin_of_member_request() from public, anon, authenticated;
+
+drop trigger if exists on_member_request_created on public.users;
+create trigger on_member_request_created
+  after insert on public.users
+  for each row execute procedure public.notify_center_admin_of_member_request();
+
+insert into public.notifications (
+  organization_id,
+  recipient_id,
+  request_user_id,
+  notification_type,
+  title,
+  body
+)
+select
+  request.organization_id,
+  admin.id,
+  request.id,
+  'member_request',
+  'New membership request',
+  coalesce(nullif(btrim(request.full_name), ''), request.email)
+    || ' requested to join your friendly space.'
+from public.users request
+join public.users admin
+  on admin.organization_id = request.organization_id
+ and admin.app_role = 'center_admin'
+ and admin.approval_status = 'approved'
+where request.app_role = 'member'
+  and request.approval_status = 'pending'
+on conflict (recipient_id, request_user_id, notification_type) do nothing;
 
 create or replace function public.current_user_is_center_admin(target_organization_id uuid)
 returns boolean
@@ -375,6 +521,74 @@ begin
 end;
 $$;
 
+create or replace function public.request_friendly_space_change(requested_organization_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  requesting_user public.users%rowtype;
+begin
+  select *
+  into requesting_user
+  from public.users
+  where id = (select auth.uid())
+    and account_type = 'personal'
+    and app_role = 'member'
+    and approval_status = 'approved'
+  for update;
+
+  if not found then
+    raise exception 'Only an approved member can request a friendly space change';
+  end if;
+
+  if requested_organization_id is null
+    or requested_organization_id = requesting_user.organization_id
+    or not exists (
+      select 1
+      from public.organizations
+      where id = requested_organization_id
+    )
+  then
+    raise exception 'Choose a different, existing friendly space';
+  end if;
+
+  update public.members
+  set active = false,
+      user_id = null
+  where user_id = requesting_user.id;
+
+  update public.users
+  set organization_id = requested_organization_id,
+      approval_status = 'pending',
+      member_id = null
+  where id = requesting_user.id;
+
+  insert into public.notifications (
+    organization_id,
+    recipient_id,
+    request_user_id,
+    notification_type,
+    title,
+    body
+  )
+  select
+    requested_organization_id,
+    admin.id,
+    requesting_user.id,
+    'member_request',
+    'New membership request',
+    coalesce(nullif(btrim(requesting_user.full_name), ''), requesting_user.email)
+      || ' requested to join your friendly space.'
+  from public.users admin
+  where admin.organization_id = requested_organization_id
+    and admin.app_role = 'center_admin'
+    and admin.approval_status = 'approved'
+  on conflict (recipient_id, request_user_id, notification_type) do nothing;
+end;
+$$;
+
 create or replace function public.deactivate_member(requested_member_id uuid)
 returns void
 language plpgsql
@@ -450,10 +664,12 @@ revoke all on function public.current_user_can_view_event(uuid) from public, ano
 grant execute on function public.current_user_can_view_event(uuid) to authenticated;
 revoke all on function public.approve_member_request(uuid) from public, anon;
 revoke all on function public.reject_member_request(uuid) from public, anon;
+revoke all on function public.request_friendly_space_change(uuid) from public, anon;
 revoke all on function public.deactivate_member(uuid) from public, anon;
 revoke all on function public.respond_to_event_invitation(uuid, text) from public, anon;
 grant execute on function public.approve_member_request(uuid) to authenticated;
 grant execute on function public.reject_member_request(uuid) to authenticated;
+grant execute on function public.request_friendly_space_change(uuid) to authenticated;
 grant execute on function public.deactivate_member(uuid) to authenticated;
 grant execute on function public.respond_to_event_invitation(uuid, text) to authenticated;
 
@@ -600,6 +816,33 @@ create policy users_no_client_delete_guard
   to authenticated
   using (false);
 
+alter table public.notifications enable row level security;
+drop policy if exists notifications_admin_read_own on public.notifications;
+create policy notifications_admin_read_own
+  on public.notifications
+  for select
+  to authenticated
+  using (
+    recipient_id = (select auth.uid())
+    and public.current_user_is_center_admin(organization_id)
+  );
+drop policy if exists notifications_admin_update_own on public.notifications;
+create policy notifications_admin_update_own
+  on public.notifications
+  for update
+  to authenticated
+  using (
+    recipient_id = (select auth.uid())
+    and public.current_user_is_center_admin(organization_id)
+  )
+  with check (
+    recipient_id = (select auth.uid())
+    and public.current_user_is_center_admin(organization_id)
+  );
+revoke all on public.notifications from public, anon, authenticated;
+grant select on public.notifications to authenticated;
+grant update (read_at) on public.notifications to authenticated;
+
 alter table public.events enable row level security;
 drop policy if exists events_read_same_friendly_space on public.events;
 create policy events_read_same_friendly_space
@@ -621,30 +864,22 @@ create policy events_read_same_friendly_space_guard
   as restrictive
   for select
   to authenticated
-  using (public.current_user_can_view_event(id));
-drop policy if exists events_admin_write on public.events;
-create policy events_admin_write
-  on public.events
-  for all
-  to authenticated
   using (
     exists (
       select 1
       from public.users u
       where u.id = (select auth.uid())
         and u.organization_id = events.organization_id
-        and u.app_role = 'center_admin'
-    )
-  )
-  with check (
-    exists (
-      select 1
-      from public.users u
-      where u.id = (select auth.uid())
-        and u.organization_id = events.organization_id
-        and u.app_role = 'center_admin'
+        and u.approval_status = 'approved'
     )
   );
+drop policy if exists events_admin_write on public.events;
+create policy events_admin_write
+  on public.events
+  for all
+  to authenticated
+  using (public.current_user_is_center_admin(events.organization_id))
+  with check (public.current_user_is_center_admin(events.organization_id));
 drop policy if exists events_admin_write_guard on public.events;
 drop policy if exists events_admin_insert_guard on public.events;
 create policy events_admin_insert_guard
@@ -652,54 +887,22 @@ create policy events_admin_insert_guard
   as restrictive
   for insert
   to authenticated
-  with check (
-    exists (
-      select 1
-      from public.users u
-      where u.id = (select auth.uid())
-        and u.organization_id = events.organization_id
-        and u.app_role = 'center_admin'
-    )
-  );
+  with check (public.current_user_is_center_admin(events.organization_id));
 drop policy if exists events_admin_update_guard on public.events;
 create policy events_admin_update_guard
   on public.events
   as restrictive
   for update
   to authenticated
-  using (
-    exists (
-      select 1
-      from public.users u
-      where u.id = (select auth.uid())
-        and u.organization_id = events.organization_id
-        and u.app_role = 'center_admin'
-    )
-  )
-  with check (
-    exists (
-      select 1
-      from public.users u
-      where u.id = (select auth.uid())
-        and u.organization_id = events.organization_id
-        and u.app_role = 'center_admin'
-    )
-  );
+  using (public.current_user_is_center_admin(events.organization_id))
+  with check (public.current_user_is_center_admin(events.organization_id));
 drop policy if exists events_admin_delete_guard on public.events;
 create policy events_admin_delete_guard
   on public.events
   as restrictive
   for delete
   to authenticated
-  using (
-    exists (
-      select 1
-      from public.users u
-      where u.id = (select auth.uid())
-        and u.organization_id = events.organization_id
-        and u.app_role = 'center_admin'
-    )
-  );
+  using (public.current_user_is_center_admin(events.organization_id));
 
 alter table public.organization_posts enable row level security;
 drop policy if exists organization_posts_read_same_friendly_space on public.organization_posts;
@@ -744,6 +947,302 @@ create policy organization_posts_admin_delete
         and u.app_role = 'center_admin'
     )
   );
+
+alter table public.organization_post_reactions enable row level security;
+drop policy if exists organization_post_reactions_same_org on public.organization_post_reactions;
+create policy organization_post_reactions_same_org
+  on public.organization_post_reactions
+  for select
+  to authenticated
+  using (
+    exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_reactions.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_reactions_insert_self on public.organization_post_reactions;
+create policy organization_post_reactions_insert_self
+  on public.organization_post_reactions
+  for insert
+  to authenticated
+  with check (
+    user_id = (select auth.uid())
+    and reaction = 'love'
+    and exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_reactions.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_reactions_delete_self on public.organization_post_reactions;
+create policy organization_post_reactions_delete_self
+  on public.organization_post_reactions
+  for delete
+  to authenticated
+  using (
+    user_id = (select auth.uid())
+    and exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_reactions.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_reactions_guard on public.organization_post_reactions;
+drop policy if exists organization_post_reactions_select_guard on public.organization_post_reactions;
+create policy organization_post_reactions_select_guard
+  on public.organization_post_reactions
+  as restrictive
+  for select
+  to authenticated
+  using (
+    exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_reactions.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_reactions_insert_guard on public.organization_post_reactions;
+create policy organization_post_reactions_insert_guard
+  on public.organization_post_reactions
+  as restrictive
+  for insert
+  to authenticated
+  with check (
+    user_id = (select auth.uid())
+    and exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_reactions.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_reactions_delete_guard on public.organization_post_reactions;
+create policy organization_post_reactions_delete_guard
+  on public.organization_post_reactions
+  as restrictive
+  for delete
+  to authenticated
+  using (
+    user_id = (select auth.uid())
+    and exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_reactions.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_reactions_no_update on public.organization_post_reactions;
+create policy organization_post_reactions_no_update
+  on public.organization_post_reactions
+  as restrictive
+  for update
+  to authenticated
+  using (false)
+  with check (false);
+
+alter table public.organization_post_views enable row level security;
+drop policy if exists organization_post_views_same_org on public.organization_post_views;
+create policy organization_post_views_same_org
+  on public.organization_post_views
+  for select
+  to authenticated
+  using (
+    exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_views.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_views_insert_self on public.organization_post_views;
+create policy organization_post_views_insert_self
+  on public.organization_post_views
+  for insert
+  to authenticated
+  with check (
+    user_id = (select auth.uid())
+    and exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_views.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_views_guard on public.organization_post_views;
+create policy organization_post_views_guard
+  on public.organization_post_views
+  as restrictive
+  for all
+  to authenticated
+  using (
+    exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_views.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  )
+  with check (
+    user_id = (select auth.uid())
+    and exists (
+      select 1
+      from public.organization_posts p
+      join public.users u on u.organization_id = p.organization_id
+      where p.id = organization_post_views.post_id
+        and u.id = (select auth.uid())
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_views_update_guard on public.organization_post_views;
+create policy organization_post_views_update_guard
+  on public.organization_post_views
+  as restrictive
+  for update
+  to authenticated
+  using (false)
+  with check (false);
+drop policy if exists organization_post_views_no_delete on public.organization_post_views;
+create policy organization_post_views_no_delete
+  on public.organization_post_views
+  as restrictive
+  for delete
+  to authenticated
+  using (false);
+
+drop policy if exists organization_post_covers_read_same_org on storage.objects;
+create policy organization_post_covers_read_same_org
+  on storage.objects
+  for select
+  to authenticated
+  using (
+    bucket_id = 'organization-post-covers'
+    and exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id::text = (storage.foldername(name))[1]
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_covers_read_guard on storage.objects;
+create policy organization_post_covers_read_guard
+  on storage.objects
+  as restrictive
+  for select
+  to authenticated
+  using (
+    bucket_id <> 'organization-post-covers'
+    or exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id::text = (storage.foldername(name))[1]
+        and u.approval_status = 'approved'
+    )
+  );
+
+drop policy if exists organization_post_covers_admin_upload on storage.objects;
+create policy organization_post_covers_admin_upload
+  on storage.objects
+  for insert
+  to authenticated
+  with check (
+    bucket_id = 'organization-post-covers'
+    and (storage.foldername(name))[2] = (select auth.uid())::text
+    and exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id::text = (storage.foldername(name))[1]
+        and u.app_role = 'center_admin'
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_covers_upload_guard on storage.objects;
+create policy organization_post_covers_upload_guard
+  on storage.objects
+  as restrictive
+  for insert
+  to authenticated
+  with check (
+    bucket_id <> 'organization-post-covers'
+    or (
+      (storage.foldername(name))[2] = (select auth.uid())::text
+      and exists (
+        select 1
+        from public.users u
+        where u.id = (select auth.uid())
+          and u.organization_id::text = (storage.foldername(name))[1]
+          and u.app_role = 'center_admin'
+          and u.approval_status = 'approved'
+      )
+    )
+  );
+
+drop policy if exists organization_post_covers_admin_delete on storage.objects;
+create policy organization_post_covers_admin_delete
+  on storage.objects
+  for delete
+  to authenticated
+  using (
+    bucket_id = 'organization-post-covers'
+    and exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id::text = (storage.foldername(name))[1]
+        and u.app_role = 'center_admin'
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_covers_delete_guard on storage.objects;
+create policy organization_post_covers_delete_guard
+  on storage.objects
+  as restrictive
+  for delete
+  to authenticated
+  using (
+    bucket_id <> 'organization-post-covers'
+    or exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id::text = (storage.foldername(name))[1]
+        and u.app_role = 'center_admin'
+        and u.approval_status = 'approved'
+    )
+  );
+drop policy if exists organization_post_covers_no_update on storage.objects;
+create policy organization_post_covers_no_update
+  on storage.objects
+  as restrictive
+  for update
+  to authenticated
+  using (bucket_id <> 'organization-post-covers')
+  with check (bucket_id <> 'organization-post-covers');
 
 -- General users may only read their centre's events and posts. Restrictive
 -- policies also constrain any older permissive policies on these tables.
@@ -826,7 +1325,10 @@ create policy activities_center_admin_select_guard
   as restrictive
   for select
   to authenticated
-  using (public.current_user_can_view_activity(id));
+  using (
+    public.current_user_is_center_admin(organization_id)
+    or public.current_user_can_view_activity(id)
+  );
 drop policy if exists activities_center_admin_insert_guard on public.activities;
 create policy activities_center_admin_insert_guard
   on public.activities

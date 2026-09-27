@@ -3,6 +3,7 @@ import { useAuth } from './hooks/useAuth'
 import { MainLayout } from './components'
 import { supabase } from './services/supabaseClient'
 import LoginPage from './pages/LoginPage'
+import useTheme from './hooks/useTheme'
 import DashboardPage from './pages/DashboardPage'
 import MembersPage from './pages/MembersPage'
 import EventsPage from './pages/EventsPage'
@@ -13,6 +14,7 @@ import MemberPortalPage from './pages/MemberPortalPage'
 
 export default function App() {
   const { user, loading, signOut } = useAuth()
+  const { theme, toggleTheme } = useTheme()
   const [currentPage, setCurrentPage] = useState('dashboard')
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(true)
@@ -75,7 +77,7 @@ export default function App() {
   }, [user])
 
   if (!user) {
-    return <LoginPage />
+    return <LoginPage theme={theme} onToggleTheme={toggleTheme} />
   }
 
   if (loading || profileLoading) {
@@ -171,7 +173,10 @@ export default function App() {
         { label: '🙋 Join Requests', href: '#', active: currentPage === 'requests', onClick: () => setCurrentPage('requests') }
       ]
     : [
-        { label: '📰 Member Portal', href: '#', active: true, onClick: () => setCurrentPage('feed') }
+        { label: '⌂ Overview', href: '#', active: currentPage === 'feed' || currentPage === 'dashboard', onClick: () => setCurrentPage('feed') },
+        { label: '▣ Events', href: '#', active: currentPage === 'member-events', onClick: () => setCurrentPage('member-events') },
+        { label: '◷ Activities', href: '#', active: currentPage === 'member-activities', onClick: () => setCurrentPage('member-activities') },
+        { label: '● Profile', href: '#', active: currentPage === 'member-profile', onClick: () => setCurrentPage('member-profile') }
       ]
 
   const pageConfig = {
@@ -181,7 +186,7 @@ export default function App() {
     activities: { title: 'Activities', subtitle: 'Log outreach activities and health services' },
     posts: { title: 'Centre News', subtitle: 'Share updates with your friendly space' },
     requests: { title: 'Join Requests', subtitle: 'Approve new members to your friendly space' },
-    feed: { title: profile.organizationName, subtitle: 'News and upcoming events from your friendly space' }
+    feed: { title: 'Overview', subtitle: profile.organizationName }
   }
 
   const renderPage = () => {
@@ -190,8 +195,21 @@ export default function App() {
         <MemberPortalPage
           profile={profile}
           user={user}
-          organizationName={profile.organizationName}
-          onLogout={handleLogout}
+          onMembershipChangeRequested={(organization) => {
+            setProfile((currentProfile) => ({
+              ...currentProfile,
+              organization_id: organization.id,
+              organizationName: organization.name,
+              approval_status: 'pending',
+              member_id: null
+            }))
+          }}
+          activeTab={{
+            feed: 'Overview',
+            'member-events': 'Events',
+            'member-activities': 'Activities',
+            'member-profile': 'Profile'
+          }[currentPage] || 'Overview'}
         />
       )
     }
@@ -200,7 +218,7 @@ export default function App() {
       case 'members':
         return <MembersPage organizationId={profile.organization_id} />
       case 'events':
-        return <EventsPage organizationId={profile.organization_id} />
+        return <EventsPage organizationId={profile.organization_id} userId={user.id} />
       case 'activities':
         return <ActivitiesPage organizationId={profile.organization_id} userId={user.id} />
       case 'posts':
@@ -209,12 +227,7 @@ export default function App() {
         return <MemberRequestsPage organizationId={profile.organization_id} />
       case 'dashboard':
       default:
-        return (
-          <DashboardPage
-            organizationId={profile.organization_id}
-            onNavigate={setCurrentPage}
-          />
-        )
+        return <DashboardPage organizationId={profile.organization_id} />
     }
   }
 
@@ -230,8 +243,15 @@ export default function App() {
         role: isAdmin ? 'Centre Admin' : 'Member'
       }}
       onLogout={handleLogout}
-      showNavigation={isAdmin}
-      showMobileNavigation={isAdmin}
+      showNavigation
+      showMobileNavigation
+      showMobileGreeting={isAdmin}
+      showPageHeading={!isAdmin || currentPage !== 'dashboard'}
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      notificationUserId={isAdmin ? user.id : null}
+      notificationOrganizationId={isAdmin ? profile.organization_id : null}
+      onOpenMembershipRequests={() => setCurrentPage('requests')}
     >
       {renderPage()}
     </MainLayout>

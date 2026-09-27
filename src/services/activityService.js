@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { attachSignedCoverUrls, removeCoverImage, uploadCoverImage } from './postService'
 
 export const fetchActivities = async (organizationId, limit = 50) => {
   const { data, error } = await supabase
@@ -8,7 +9,7 @@ export const fetchActivities = async (organizationId, limit = 50) => {
     .order('date', { ascending: false })
     .limit(limit)
   if (error) throw error
-  return data
+  return attachSignedCoverUrls(data || [])
 }
 
 export const fetchActivity = async (activityId) => {
@@ -18,17 +19,34 @@ export const fetchActivity = async (activityId) => {
     .eq('id', activityId)
     .single()
   if (error) throw error
-  return data
+  return (await attachSignedCoverUrls([data]))[0]
 }
 
 export const logActivity = async (organizationId, userId, activityData) => {
+  const { coverFile, ...fields } = activityData
+  const coverImagePath = await uploadCoverImage(organizationId, userId, coverFile)
   const { data, error } = await supabase
     .from('activities')
-    .insert([{ organization_id: organizationId, created_by: userId, ...activityData, created_at: new Date().toISOString() }])
+    .insert([{
+      organization_id: organizationId,
+      created_by: userId,
+      ...fields,
+      cover_image_path: coverImagePath,
+      created_at: new Date().toISOString()
+    }])
     .select()
     .single()
-  if (error) throw error
-  return data
+  if (error) {
+    if (coverImagePath) {
+      try {
+        await removeCoverImage(coverImagePath)
+      } catch (cleanupError) {
+        console.error('Could not remove activity cover after activity creation failed:', cleanupError)
+      }
+    }
+    throw error
+  }
+  return (await attachSignedCoverUrls([data]))[0]
 }
 
 export const updateActivity = async (activityId, activityData) => {
@@ -42,9 +60,16 @@ export const updateActivity = async (activityId, activityData) => {
   return data
 }
 
-export const deleteActivity = async (activityId) => {
+export const deleteActivity = async (activityId, coverImagePath) => {
   const { error } = await supabase.from('activities').delete().eq('id', activityId)
   if (error) throw error
+  if (coverImagePath) {
+    try {
+      await removeCoverImage(coverImagePath)
+    } catch (cleanupError) {
+      throw new Error(`The activity was deleted, but its cover image could not be removed: ${cleanupError.message}`)
+    }
+  }
 }
 
 export const recordActivityParticipants = async (activityId, memberIds) => {

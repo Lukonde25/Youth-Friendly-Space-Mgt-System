@@ -28,6 +28,7 @@ const Modal = ({
   onClose,
   size = 'md',
   showCloseButton = true,
+  dialogClassName = '',
   ...props
 }) => {
   // Close on Escape key
@@ -56,37 +57,29 @@ const Modal = ({
   if (!isOpen) return null;
 
   const sizeClasses = {
-    sm: 'max-w-sm',
-    md: 'max-w-md',
-    lg: 'max-w-lg',
-    xl: 'max-w-xl'
+    sm: 'app-modal-dialog--sm',
+    md: 'app-modal-dialog--md',
+    lg: 'app-modal-dialog--lg',
+    xl: 'app-modal-dialog--xl'
   };
 
   return (
-    <>
-      {/* Backdrop */}
+    <div className="app-modal">
       <div
-        className="fixed inset-0 bg-black bg-opacity-50 z-modal"
+        className="app-modal-backdrop"
         onClick={onClose}
         role="presentation"
         aria-hidden="true"
       />
-
-      {/* Modal */}
       <div
-        className={[
-          'fixed inset-0 z-modal flex items-center justify-center p-4',
-          'pointer-events-none'
-        ]
-          .filter(Boolean)
-          .join(' ')}
+        className="app-modal-layer"
         role="presentation"
       >
         <div
           className={[
-            'bg-primary rounded-lg shadow-xl w-full',
+            'app-modal-dialog',
             sizeClasses[size],
-            'pointer-events-auto'
+            dialogClassName,
           ]
             .filter(Boolean)
             .join(' ')}
@@ -117,7 +110,7 @@ const Modal = ({
           <div className="p-6">{children}</div>
         </div>
       </div>
-    </>
+    </div>
   );
 };
 

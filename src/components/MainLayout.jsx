@@ -14,7 +14,13 @@
  * </MainLayout>
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import ThemeToggle from './ThemeToggle';
+import {
+  fetchNotifications,
+  markNotificationAsRead,
+  subscribeToNotifications
+} from '../services/notificationService';
 
 const getNavIcon = (label = '') => label.split(' ')[0] || '•';
 const getNavText = (label = '') => label.replace(/^\S+\s*/, '');
@@ -29,12 +35,23 @@ const MainLayout = ({
   actions,
   showNavigation = true,
   showMobileNavigation = true,
+  showMobileGreeting = true,
+  showPageHeading = true,
+  theme,
+  onToggleTheme,
+  notificationUserId,
+  notificationOrganizationId,
+  onOpenMembershipRequests,
   className = '',
   ...props
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [notifications, setNotifications] = useState([]);
+  const [notificationError, setNotificationError] = useState(null);
+  const [notificationBusyId, setNotificationBusyId] = useState(null);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const mobileNavItems = navItems.slice(0, 4);
   const searchResults = navItems.filter((item) => (
     getNavText(item.label).toLowerCase().includes(searchQuery.trim().toLowerCase())
@@ -45,6 +62,141 @@ const MainLayout = ({
     setSearchQuery('');
     setIsMenuOpen(false);
   };
+
+  useEffect(() => {
+    if (!notificationUserId || !notificationOrganizationId) return undefined;
+
+    let isMounted = true
+    const loadNotifications = async () => {
+      try {
+        const data = await fetchNotifications(notificationUserId)
+        if (isMounted) {
+          setNotifications(data)
+          setNotificationError(null)
+        }
+      } catch (loadError) {
+        console.error('Failed to load admin notifications:', loadError)
+        if (isMounted) setNotificationError(loadError.message)
+      }
+    }
+
+    loadNotifications()
+    const unsubscribe = subscribeToNotifications(
+      notificationUserId,
+      loadNotifications,
+      (subscriptionError) => {
+        console.error('Admin notification subscription failed:', subscriptionError)
+        if (isMounted) {
+          setNotificationError(`Live updates unavailable. Retrying automatically: ${subscriptionError.message}`)
+        }
+      }
+    )
+    const intervalId = window.setInterval(loadNotifications, 30000)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') loadNotifications()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      isMounted = false
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      unsubscribe()
+    }
+  }, [notificationUserId, notificationOrganizationId])
+
+  const openRequestNotification = async (notification) => {
+    if (!notification.read_at) {
+      try {
+        setNotificationBusyId(notification.id)
+        await markNotificationAsRead(notification.id, notificationUserId)
+        setNotifications((current) => current.map((item) => (
+          item.id === notification.id
+            ? { ...item, read_at: new Date().toISOString() }
+            : item
+        )))
+        setNotificationError(null)
+      } catch (markError) {
+        console.error('Failed to mark notification as read:', markError)
+        setNotificationError(markError.message)
+        setNotificationBusyId(null)
+        return
+      }
+    }
+
+    setNotificationBusyId(null)
+    setIsNotificationsOpen(false)
+    onOpenMembershipRequests?.()
+  }
+
+  const renderNotificationControl = (className) => {
+    if (!notificationUserId || !notificationOrganizationId) return null
+    const unreadCount = notifications.filter((item) => !item.read_at).length
+
+    return (
+      <div className={`notification-control ${className}`}>
+        <button
+          type="button"
+          className="notification-bell"
+          aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ''}`}
+          aria-expanded={isNotificationsOpen}
+          onClick={() => setIsNotificationsOpen((open) => !open)}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+            <path d="M10 21h4" />
+          </svg>
+          {unreadCount > 0 && <span className="notification-count">{unreadCount > 99 ? '99+' : unreadCount}</span>}
+        </button>
+        {isNotificationsOpen && (
+          <section className="notification-popover" aria-label="Notifications">
+            <header>
+              <strong>Notifications</strong>
+              {unreadCount > 0 && <span>{unreadCount} new</span>}
+            </header>
+            {notificationError && (
+              <p className="notification-error" role="alert">
+                Could not load notifications: {notificationError}
+              </p>
+            )}
+            <div className="notification-list">
+              {notifications.length ? notifications.map((notification) => (
+                <button
+                  key={notification.id}
+                  type="button"
+                  className={notification.read_at ? 'notification-item' : 'notification-item unread'}
+                  disabled={notificationBusyId === notification.id}
+                  onClick={() => openRequestNotification(notification)}
+                >
+                  <span className="notification-item-icon" aria-hidden="true">👤</span>
+                  <span className="notification-item-copy">
+                    <strong>{notification.title}</strong>
+                    <span>{notification.body}</span>
+                    <time dateTime={notification.created_at}>
+                      {new Date(notification.created_at).toLocaleString()}
+                    </time>
+                  </span>
+                  {!notification.read_at && <span className="notification-unread-dot" aria-label="Unread" />}
+                </button>
+              )) : (
+                !notificationError && <p className="notification-empty">No notifications yet.</p>
+              )}
+            </div>
+            <button
+              type="button"
+              className="notification-view-requests"
+              onClick={() => {
+                setIsNotificationsOpen(false)
+                onOpenMembershipRequests?.()
+              }}
+            >
+              View membership requests
+            </button>
+          </section>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className={`app-shell min-h-screen bg-gray-50${showNavigation ? ' has-sidebar' : ''}`}>
@@ -132,6 +284,10 @@ const MainLayout = ({
               {(user.name || 'U').trim().charAt(0).toUpperCase()}
             </button>
           )}
+          {onToggleTheme && (
+            <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+          )}
+          {renderNotificationControl('notification-mobile')}
           {isProfileOpen && user && (
             <div className="mobile-profile-popover">
               <strong>{user.name}</strong>
@@ -140,9 +296,9 @@ const MainLayout = ({
             </div>
           )}
         </div>
-        {showNavigation && (
+        {showNavigation && showPageHeading && (
           <div className="mobile-page-heading">
-            {user && <p className="mobile-greeting">Welcome back, {user.name}</p>}
+            {showMobileGreeting && user && <p className="mobile-greeting">Welcome back, {user.name}</p>}
             {title && <h1>{title}</h1>}
             {subtitle && <p>{subtitle}</p>}
           </div>
@@ -152,7 +308,7 @@ const MainLayout = ({
       <div className="flex">
         {/* Navigation Sidebar */}
         {showNavigation && (
-          <nav className="app-sidebar w-64 bg-secondary border-r border-gray-200 hidden md:block">
+          <nav className={`app-sidebar w-64 bg-secondary border-r border-gray-200 hidden md:block${notificationOrganizationId ? ' admin-sidebar-nav' : ''}`}>
             <div className="sidebar-brand">
               <span className="sidebar-brand-mark" aria-hidden="true">YH</span>
               <span>Youth Health</span>
@@ -188,6 +344,14 @@ const MainLayout = ({
                 ))}
               </ul>
             </div>
+            {onToggleTheme && (
+              <ThemeToggle
+                theme={theme}
+                onToggle={onToggleTheme}
+                className="sidebar-theme-toggle"
+              />
+            )}
+            {renderNotificationControl('notification-desktop')}
             {user && (
               <div className="sidebar-profile">
                 <span className="sidebar-avatar" aria-hidden="true">
@@ -209,7 +373,7 @@ const MainLayout = ({
 
         {/* Main Content */}
         <main className={['app-content flex-1 md:p-8 p-4', className].filter(Boolean).join(' ')} {...props}>
-          {showNavigation && (
+          {showNavigation && showPageHeading && (
             <div className="desktop-content-heading">
               <div>
                 {title && <h1>{title}</h1>}

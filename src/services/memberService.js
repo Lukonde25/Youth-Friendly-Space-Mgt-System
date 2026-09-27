@@ -128,9 +128,9 @@ export const getAvailableMembersForEvent = async (organizationId, eventId) => {
 
   if (invError) throw invError
 
-  const invitedIds = invitations.map(inv => inv.member_id)
+  const invitedIds = new Set((invitations || []).map(inv => inv.member_id))
   
-  return members.filter(member => !invitedIds.includes(member.id))
+  return (members || []).filter(member => !invitedIds.has(member.id))
 }
 
 export const searchMembers = async (organizationId, query) => {

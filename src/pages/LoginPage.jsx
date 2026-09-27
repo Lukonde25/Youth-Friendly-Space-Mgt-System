@@ -6,9 +6,10 @@
 
 import { useEffect, useState } from 'react'
 import { Button, Input, Card, Alert } from '../components'
+import ThemeToggle from '../components/ThemeToggle'
 import { fetchOrganizations, signIn, signUp } from '../services/supabaseClient'
 
-export default function LoginPage() {
+export default function LoginPage({ theme, onToggleTheme }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [fullName, setFullName] = useState('')
@@ -85,6 +86,13 @@ export default function LoginPage() {
 
   return (
     <div className="login-page min-h-screen flex-center p-4">
+      {onToggleTheme && (
+        <ThemeToggle
+          theme={theme}
+          onToggle={onToggleTheme}
+          className="login-theme-toggle"
+        />
+      )}
       <Card className="login-card w-full max-w-md">
         <div className="text-center mb-8">
           <div className="login-brand-mark" aria-hidden="true">YH</div>

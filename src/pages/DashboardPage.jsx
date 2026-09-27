@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react'
 import { Card, StatCard, Table, Alert, EventCard } from '../components'
 import { getDashboardData } from '../services/reportService'
 
-export default function DashboardPage({ organizationId, onNavigate }) {
+export default function DashboardPage({ organizationId }) {
   const [dashboard, setDashboard] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -69,7 +69,7 @@ export default function DashboardPage({ organizationId, onNavigate }) {
   return (
     <div className="space-y-8">
       <section className="dashboard-hero">
-        <div>
+        <div className="dashboard-hero-content">
           <span className="dashboard-hero-eyebrow">Monthly impact · {dashboard.month}</span>
           <h2>Your community is making a difference</h2>
           <p>Here’s the impact your friendly space has made this month.</p>
@@ -79,20 +79,6 @@ export default function DashboardPage({ organizationId, onNavigate }) {
           <span>people reached</span>
         </div>
       </section>
-
-      <nav className="dashboard-shortcuts" aria-label="Explore centre sections">
-        {[
-          { label: 'Members', icon: '👥', page: 'members' },
-          { label: 'Events', icon: '📅', page: 'events' },
-          { label: 'Activities', icon: '📝', page: 'activities' },
-          { label: 'Join requests', icon: '🙋', page: 'requests' }
-        ].map((item) => (
-          <button key={item.page} type="button" onClick={() => onNavigate?.(item.page)}>
-            <span aria-hidden="true">{item.icon}</span>
-            {item.label}
-          </button>
-        ))}
-      </nav>
 
       <div className="grid grid-2 gap-6 dashboard-stat-grid">
         <StatCard
