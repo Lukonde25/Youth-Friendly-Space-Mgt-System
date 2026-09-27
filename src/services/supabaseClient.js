@@ -64,7 +64,9 @@ export const signUp = async (email, password, registration) => {
     email,
     password,
     options: {
-      emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      emailRedirectTo: typeof window !== 'undefined'
+        ? `${window.location.origin}${import.meta.env.BASE_URL}`
+        : undefined,
       data: {
         account_type: registration.accountType,
         organization_name: registration.organizationName || null,

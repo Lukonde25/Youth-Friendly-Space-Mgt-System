@@ -1,5 +1,17 @@
 # Youth-Friendly-Space-Mgt-System
 
+## GitHub Pages deployment
+
+This repository builds to Vite's `dist` directory and is configured for the project URL
+`https://lukonde25.github.io/Youth-Friendly-Space-Mgt-System/`. GitHub Pages must deploy
+the `dist` artifact through GitHub Actions; serving the repository root directly will expose
+the development `src/main.jsx` entry and result in a 404.
+
+In the repository settings, set **Pages → Build and deployment → Source** to **GitHub Actions**.
+Add the repository Actions secrets `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` so the
+workflow can configure the Supabase client in the production build. Every push to `main`
+will then build and deploy the app.
+
 ## Centre registration and member accounts
 
 Before using registration, run [`supabase/user_auto_create.sql`](./supabase/user_auto_create.sql) in the Supabase SQL Editor. The script adds the account/profile fields, creates the centre-news, event-feedback, and admin notifications tables, configures private centre-post cover storage, adds reporting metrics, replaces the old first-organisation signup trigger, and applies role- and organisation-scoped row-level security. It expects the existing `organizations`, `users`, `events`, `members`, `activities`, `activity_participants`, and `event_invitations` tables.
