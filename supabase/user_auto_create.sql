@@ -63,12 +63,27 @@ where u.member_id = m.id
 alter table public.events
   add column if not exists event_type text,
   add column if not exists status text not null default 'scheduled',
-  add column if not exists cover_image_path text;
+  add column if not exists cover_image_path text,
+  add column if not exists people_reached integer not null default 0,
+  add column if not exists contraceptives_distributed integer not null default 0,
+  add column if not exists pregnancies_identified integer not null default 0,
+  add column if not exists health_screenings integer not null default 0,
+  add column if not exists health_talks_held integer not null default 0,
+  add column if not exists notes text,
+  add column if not exists photo_url text,
+  add column if not exists is_posted_to_community boolean not null default false,
+  add column if not exists post_id uuid;
 
-alter table public.activities
-  add column if not exists screenings_done integer not null default 0,
-  add column if not exists health_talks_given integer not null default 0,
-  add column if not exists cover_image_path text;
+alter table public.events drop constraint if exists events_outcome_metrics_nonnegative;
+alter table public.events
+  add constraint events_outcome_metrics_nonnegative
+  check (
+    people_reached >= 0
+    and contraceptives_distributed >= 0
+    and pregnancies_identified >= 0
+    and health_screenings >= 0
+    and health_talks_held >= 0
+  );
 
 create table if not exists public.organization_posts (
   id uuid primary key default gen_random_uuid(),
@@ -146,13 +161,136 @@ create table if not exists public.notifications (
   organization_id uuid not null references public.organizations(id) on delete cascade,
   recipient_id uuid not null references public.users(id) on delete cascade,
   request_user_id uuid not null references public.users(id) on delete cascade,
-  notification_type text not null check (notification_type = 'member_request'),
+  notification_type text not null default 'member_request',
   title text not null,
   body text not null,
   created_at timestamptz not null default now(),
   read_at timestamptz,
   unique (recipient_id, request_user_id, notification_type)
 );
+
+do $$
+declare
+  existing_constraint record;
+begin
+  for existing_constraint in
+    select conname
+    from pg_constraint
+    where conrelid = 'public.notifications'::regclass
+      and contype = 'c'
+      and pg_get_constraintdef(oid) like '%notification_type%'
+  loop
+    execute format('alter table public.notifications drop constraint %I', existing_constraint.conname);
+  end loop;
+end;
+$$;
+
+alter table public.notifications
+  drop constraint if exists notifications_recipient_id_request_user_id_notification_type_key;
+
+create table if not exists public.meetings (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  title text not null check (char_length(btrim(title)) between 5 and 100),
+  scheduled_at timestamptz not null,
+  location text not null check (char_length(btrim(location)) between 1 and 100),
+  description text check (description is null or char_length(description) <= 500),
+  capacity integer check (capacity is null or capacity > 0),
+  status text not null default 'scheduled'
+    check (status in ('scheduled', 'ongoing', 'completed', 'cancelled')),
+  topic text,
+  announcements text,
+  notes text,
+  photo_path text,
+  post_id uuid references public.organization_posts(id) on delete set null,
+  is_posted_to_community boolean not null default false,
+  created_by uuid references public.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.meeting_facilitators (
+  meeting_id uuid not null references public.meetings(id) on delete cascade,
+  user_id uuid not null references public.users(id) on delete cascade,
+  assigned_by uuid references public.users(id) on delete set null,
+  confirmed_at timestamptz,
+  attended boolean not null default false,
+  created_at timestamptz not null default now(),
+  primary key (meeting_id, user_id)
+);
+
+create table if not exists public.meeting_attendance (
+  meeting_id uuid not null references public.meetings(id) on delete cascade,
+  member_id uuid not null references public.members(id) on delete cascade,
+  attended boolean not null default false,
+  updated_by uuid references public.users(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (meeting_id, member_id)
+);
+
+create index if not exists meetings_org_scheduled_idx
+  on public.meetings (organization_id, scheduled_at);
+create index if not exists meeting_facilitators_user_idx
+  on public.meeting_facilitators (user_id, meeting_id);
+create index if not exists meeting_attendance_member_idx
+  on public.meeting_attendance (member_id, updated_at desc);
+
+alter table public.meeting_facilitators
+  add column if not exists assigned_by uuid references public.users(id) on delete set null,
+  add column if not exists confirmed_at timestamptz,
+  add column if not exists attended boolean not null default false;
+alter table public.meeting_attendance
+  add column if not exists attended boolean not null default false,
+  add column if not exists updated_by uuid references public.users(id) on delete set null,
+  add column if not exists updated_at timestamptz not null default now();
+
+do $$
+begin
+  if exists (
+    select 1 from pg_publication where pubname = 'supabase_realtime'
+  ) and not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'meeting_attendance'
+  ) then
+    execute 'alter publication supabase_realtime add table public.meeting_attendance';
+  end if;
+end;
+$$;
+
+alter table public.notifications
+  add column if not exists meeting_id uuid references public.meetings(id) on delete cascade,
+  add column if not exists post_id uuid references public.organization_posts(id) on delete cascade;
+
+alter table public.notifications drop constraint if exists notifications_type_check;
+alter table public.notifications
+  add constraint notifications_type_check
+  check (notification_type in ('member_request', 'meeting_assignment', 'community_post'));
+
+create unique index if not exists notifications_community_post_recipient_unique
+  on public.notifications (recipient_id, post_id)
+  where notification_type = 'community_post' and post_id is not null;
+create unique index if not exists notifications_meeting_assignment_recipient_unique
+  on public.notifications (recipient_id, meeting_id)
+  where notification_type = 'meeting_assignment' and meeting_id is not null;
+create unique index if not exists notifications_member_request_recipient_unique
+  on public.notifications (recipient_id, request_user_id, notification_type)
+  where notification_type = 'member_request';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'events_post_id_fkey'
+      and conrelid = 'public.events'::regclass
+  ) then
+    alter table public.events
+      add constraint events_post_id_fkey
+      foreign key (post_id) references public.organization_posts(id) on delete set null;
+  end if;
+end;
+$$;
 
 create index if not exists notifications_recipient_created_idx
   on public.notifications (recipient_id, created_at desc);
@@ -174,6 +312,111 @@ begin
   end if;
 end;
 $$;
+
+create or replace function public.notify_meeting_facilitator_assignment()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  meeting_record public.meetings%rowtype;
+begin
+  select * into meeting_record
+  from public.meetings
+  where id = new.meeting_id;
+
+  if meeting_record.created_by is not null
+      and new.user_id <> meeting_record.created_by then
+    insert into public.notifications (
+      organization_id, recipient_id, request_user_id, notification_type,
+      meeting_id, title, body
+    )
+    values (
+      meeting_record.organization_id,
+      new.user_id,
+      coalesce(new.assigned_by, meeting_record.created_by),
+      'meeting_assignment',
+      new.meeting_id,
+      'You were added as a meeting facilitator',
+      'You have been assigned to facilitate "' || meeting_record.title || '".'
+    )
+    -- Older installations may still have the former request-based unique
+    -- constraint. Ignore any duplicate notification so it cannot abort the
+    -- facilitator assignment (and the meeting creation flow).
+    on conflict do nothing;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists meeting_facilitator_assignment_notification on public.meeting_facilitators;
+create trigger meeting_facilitator_assignment_notification
+  after insert on public.meeting_facilitators
+  for each row execute function public.notify_meeting_facilitator_assignment();
+
+create or replace function public.notify_members_of_community_post()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.author_id is not null then
+    insert into public.notifications (
+      organization_id, recipient_id, request_user_id, notification_type,
+      post_id, title, body
+    )
+    select
+      new.organization_id,
+      u.id,
+      new.author_id,
+      'community_post',
+      new.id,
+      'New Centre News',
+      new.title
+    from public.users u
+    where u.organization_id = new.organization_id
+      and u.app_role in ('member', 'general_user')
+      and u.approval_status = 'approved'
+      and u.id <> new.author_id
+    on conflict (recipient_id, post_id)
+      where notification_type = 'community_post' and post_id is not null
+      do nothing;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists organization_post_member_notification on public.organization_posts;
+create trigger organization_post_member_notification
+  after insert on public.organization_posts
+  for each row execute function public.notify_members_of_community_post();
+
+create or replace function public.detach_deleted_community_post()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.events
+  set post_id = null,
+      is_posted_to_community = false
+  where post_id = old.id;
+
+  update public.meetings
+  set post_id = null,
+      is_posted_to_community = false
+  where post_id = old.id;
+  return old;
+end;
+$$;
+
+drop trigger if exists organization_post_detach_content on public.organization_posts;
+create trigger organization_post_detach_content
+  before delete on public.organization_posts
+  for each row execute function public.detach_deleted_community_post();
 
 create or replace function public.handle_new_auth_user()
 returns trigger
@@ -289,7 +532,9 @@ begin
     where admin.organization_id = new.organization_id
       and admin.app_role = 'center_admin'
       and admin.approval_status = 'approved'
-    on conflict (recipient_id, request_user_id, notification_type) do nothing;
+    on conflict (recipient_id, request_user_id, notification_type)
+      where notification_type = 'member_request'
+      do nothing;
   end if;
 
   return new;
@@ -326,7 +571,9 @@ join public.users admin
  and admin.approval_status = 'approved'
 where request.app_role = 'member'
   and request.approval_status = 'pending'
-on conflict (recipient_id, request_user_id, notification_type) do nothing;
+on conflict (recipient_id, request_user_id, notification_type)
+  where notification_type = 'member_request'
+  do nothing;
 
 create or replace function public.current_user_is_center_admin(target_organization_id uuid)
 returns boolean
@@ -345,7 +592,9 @@ as $$
   );
 $$;
 
-create or replace function public.current_user_can_view_activity(target_activity_id uuid)
+-- These helpers run as their owner so meeting and attendance policies can
+-- inspect each other's tables without recursively invoking row-level security.
+create or replace function public.current_user_is_meeting_attendee(target_meeting_id uuid)
 returns boolean
 language sql
 stable
@@ -354,26 +603,16 @@ set search_path = public
 as $$
   select exists (
     select 1
-    from public.activities a
-    join public.users u
-      on u.id = (select auth.uid())
-     and u.organization_id = a.organization_id
-     and u.approval_status = 'approved'
-    where a.id = target_activity_id
-      and (
-        u.app_role = 'center_admin'
-        or exists (
-          select 1
-          from public.activity_participants ap
-          join public.members m on m.id = ap.member_id
-          where ap.activity_id = a.id
-            and m.user_id = u.id
-        )
-      )
+    from public.meeting_attendance attendance
+    join public.members member on member.id = attendance.member_id
+    where attendance.meeting_id = target_meeting_id
+      and attendance.attended = true
+      and member.user_id = (select auth.uid())
+      and member.active = true
   );
 $$;
 
-create or replace function public.current_user_is_admin_for_activity(target_activity_id uuid)
+create or replace function public.current_user_is_meeting_facilitator(target_meeting_id uuid)
 returns boolean
 language sql
 stable
@@ -382,9 +621,54 @@ set search_path = public
 as $$
   select exists (
     select 1
-    from public.activities a
-    where a.id = target_activity_id
-      and public.current_user_is_center_admin(a.organization_id)
+    from public.meeting_facilitators facilitator
+    where facilitator.meeting_id = target_meeting_id
+      and facilitator.user_id = (select auth.uid())
+  );
+$$;
+
+create or replace function public.current_user_is_admin_for_meeting(target_meeting_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.meetings meeting
+    join public.users admin
+      on admin.id = (select auth.uid())
+     and admin.organization_id = meeting.organization_id
+     and admin.app_role = 'center_admin'
+     and admin.approval_status = 'approved'
+    where meeting.id = target_meeting_id
+  );
+$$;
+
+create or replace function public.current_user_can_manage_meeting_attendance(
+  target_meeting_id uuid,
+  target_member_id uuid,
+  target_updated_by uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select target_updated_by = (select auth.uid()) and exists (
+    select 1
+    from public.meetings meeting
+    join public.users admin
+      on admin.id = (select auth.uid())
+     and admin.organization_id = meeting.organization_id
+     and admin.app_role = 'center_admin'
+     and admin.approval_status = 'approved'
+    join public.members member
+      on member.id = target_member_id
+     and member.organization_id = meeting.organization_id
+    where meeting.id = target_meeting_id
   );
 $$;
 
@@ -585,7 +869,9 @@ begin
   where admin.organization_id = requested_organization_id
     and admin.app_role = 'center_admin'
     and admin.approval_status = 'approved'
-  on conflict (recipient_id, request_user_id, notification_type) do nothing;
+  on conflict (recipient_id, request_user_id, notification_type)
+    where notification_type = 'member_request'
+    do nothing;
 end;
 $$;
 
@@ -656,10 +942,14 @@ $$;
 
 revoke all on function public.current_user_is_center_admin(uuid) from public, anon;
 grant execute on function public.current_user_is_center_admin(uuid) to authenticated;
-revoke all on function public.current_user_can_view_activity(uuid) from public, anon;
-grant execute on function public.current_user_can_view_activity(uuid) to authenticated;
-revoke all on function public.current_user_is_admin_for_activity(uuid) from public, anon;
-grant execute on function public.current_user_is_admin_for_activity(uuid) to authenticated;
+revoke all on function public.current_user_is_meeting_attendee(uuid) from public, anon;
+grant execute on function public.current_user_is_meeting_attendee(uuid) to authenticated;
+revoke all on function public.current_user_is_meeting_facilitator(uuid) from public, anon;
+grant execute on function public.current_user_is_meeting_facilitator(uuid) to authenticated;
+revoke all on function public.current_user_is_admin_for_meeting(uuid) from public, anon;
+grant execute on function public.current_user_is_admin_for_meeting(uuid) to authenticated;
+revoke all on function public.current_user_can_manage_meeting_attendance(uuid, uuid, uuid) from public, anon;
+grant execute on function public.current_user_can_manage_meeting_attendance(uuid, uuid, uuid) to authenticated;
 revoke all on function public.current_user_can_view_event(uuid) from public, anon;
 grant execute on function public.current_user_can_view_event(uuid) to authenticated;
 revoke all on function public.approve_member_request(uuid) from public, anon;
@@ -807,7 +1097,7 @@ create policy users_update_self_profile
   using (id = (select auth.uid()))
   with check (id = (select auth.uid()));
 revoke update on public.users from public, anon, authenticated;
-grant update (full_name, phone, age) on public.users to authenticated;
+grant update (full_name, phone) on public.users to authenticated;
 drop policy if exists users_no_client_delete_guard on public.users;
 create policy users_no_client_delete_guard
   on public.users
@@ -818,30 +1108,161 @@ create policy users_no_client_delete_guard
 
 alter table public.notifications enable row level security;
 drop policy if exists notifications_admin_read_own on public.notifications;
-create policy notifications_admin_read_own
+drop policy if exists notifications_read_own on public.notifications;
+create policy notifications_read_own
   on public.notifications
   for select
   to authenticated
   using (
     recipient_id = (select auth.uid())
-    and public.current_user_is_center_admin(organization_id)
+    and exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id = notifications.organization_id
+        and u.approval_status = 'approved'
+    )
   );
 drop policy if exists notifications_admin_update_own on public.notifications;
-create policy notifications_admin_update_own
+drop policy if exists notifications_update_own on public.notifications;
+create policy notifications_update_own
   on public.notifications
   for update
   to authenticated
   using (
     recipient_id = (select auth.uid())
-    and public.current_user_is_center_admin(organization_id)
+    and exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id = notifications.organization_id
+        and u.approval_status = 'approved'
+    )
   )
   with check (
     recipient_id = (select auth.uid())
-    and public.current_user_is_center_admin(organization_id)
+    and exists (
+      select 1
+      from public.users u
+      where u.id = (select auth.uid())
+        and u.organization_id = notifications.organization_id
+        and u.approval_status = 'approved'
+    )
   );
 revoke all on public.notifications from public, anon, authenticated;
 grant select on public.notifications to authenticated;
 grant update (read_at) on public.notifications to authenticated;
+
+alter table public.meetings enable row level security;
+drop policy if exists meetings_read_admin_or_attendee on public.meetings;
+create policy meetings_read_admin_or_attendee
+  on public.meetings
+  for select
+  to authenticated
+  using (
+    public.current_user_is_center_admin(organization_id)
+    or public.current_user_is_meeting_attendee(id)
+    or public.current_user_is_meeting_facilitator(id)
+  );
+drop policy if exists meetings_admin_insert on public.meetings;
+create policy meetings_admin_insert
+  on public.meetings
+  for insert
+  to authenticated
+  with check (
+    created_by = (select auth.uid())
+    and public.current_user_is_center_admin(organization_id)
+  );
+drop policy if exists meetings_admin_update on public.meetings;
+create policy meetings_admin_update
+  on public.meetings
+  for update
+  to authenticated
+  using (public.current_user_is_center_admin(organization_id))
+  with check (public.current_user_is_center_admin(organization_id));
+drop policy if exists meetings_admin_delete on public.meetings;
+create policy meetings_admin_delete
+  on public.meetings
+  for delete
+  to authenticated
+  using (public.current_user_is_center_admin(organization_id));
+
+alter table public.meeting_facilitators enable row level security;
+drop policy if exists meeting_facilitators_read_admin_or_self on public.meeting_facilitators;
+create policy meeting_facilitators_read_admin_or_self
+  on public.meeting_facilitators
+  for select
+  to authenticated
+  using (
+    user_id = (select auth.uid())
+    or exists (
+      select 1
+      from public.meetings meeting
+      where meeting.id = meeting_facilitators.meeting_id
+        and public.current_user_is_center_admin(meeting.organization_id)
+    )
+  );
+drop policy if exists meeting_facilitators_admin_manage on public.meeting_facilitators;
+create policy meeting_facilitators_admin_manage
+  on public.meeting_facilitators
+  for all
+  to authenticated
+  using (
+    exists (
+      select 1
+      from public.meetings meeting
+      where meeting.id = meeting_facilitators.meeting_id
+        and public.current_user_is_center_admin(meeting.organization_id)
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.meetings meeting
+      join public.users facilitator
+        on facilitator.id = meeting_facilitators.user_id
+       and facilitator.organization_id = meeting.organization_id
+       and facilitator.app_role in ('member', 'general_user')
+       and facilitator.approval_status = 'approved'
+      join public.members facilitator_member
+        on facilitator_member.user_id = facilitator.id
+       and facilitator_member.organization_id = meeting.organization_id
+       and facilitator_member.active = true
+      where meeting.id = meeting_facilitators.meeting_id
+        and public.current_user_is_center_admin(meeting.organization_id)
+    )
+  );
+
+alter table public.meeting_attendance enable row level security;
+drop policy if exists meeting_attendance_read_admin_or_self on public.meeting_attendance;
+create policy meeting_attendance_read_admin_or_self
+  on public.meeting_attendance
+  for select
+  to authenticated
+  using (
+    exists (
+      select 1
+      from public.members member
+      where member.id = meeting_attendance.member_id
+        and member.user_id = (select auth.uid())
+    )
+    or public.current_user_is_admin_for_meeting(meeting_attendance.meeting_id)
+  );
+drop policy if exists meeting_attendance_admin_manage on public.meeting_attendance;
+create policy meeting_attendance_admin_manage
+  on public.meeting_attendance
+  for all
+  to authenticated
+  using (
+    public.current_user_is_admin_for_meeting(meeting_attendance.meeting_id)
+  )
+  with check (
+    public.current_user_can_manage_meeting_attendance(
+      meeting_attendance.meeting_id,
+      meeting_attendance.member_id,
+      meeting_attendance.updated_by
+    )
+  );
 
 alter table public.events enable row level security;
 drop policy if exists events_read_same_friendly_space on public.events;
@@ -1288,107 +1709,71 @@ create policy members_center_admin_guard
   )
   with check (public.current_user_is_center_admin(organization_id));
 
-alter table public.activities enable row level security;
-drop policy if exists activities_center_admin_access on public.activities;
-create policy activities_center_admin_access
-  on public.activities
-  for all
-  to authenticated
-  using (
-    exists (
-      select 1
-      from public.users u
-      where u.id = (select auth.uid())
-        and u.organization_id = activities.organization_id
-        and u.app_role = 'center_admin'
-    )
-  )
-  with check (
-    exists (
-      select 1
-      from public.users u
-      where u.id = (select auth.uid())
-        and u.organization_id = activities.organization_id
-        and u.app_role = 'center_admin'
-    )
-  );
-drop policy if exists activities_center_admin_guard on public.activities;
-drop policy if exists activities_member_participant_read on public.activities;
-create policy activities_member_participant_read
-  on public.activities
-  for select
-  to authenticated
-  using (public.current_user_can_view_activity(id));
-drop policy if exists activities_center_admin_select_guard on public.activities;
-create policy activities_center_admin_select_guard
-  on public.activities
-  as restrictive
-  for select
-  to authenticated
-  using (
-    public.current_user_is_center_admin(organization_id)
-    or public.current_user_can_view_activity(id)
-  );
-drop policy if exists activities_center_admin_insert_guard on public.activities;
-create policy activities_center_admin_insert_guard
-  on public.activities
-  as restrictive
-  for insert
-  to authenticated
-  with check (public.current_user_is_center_admin(organization_id));
-drop policy if exists activities_center_admin_update_guard on public.activities;
-create policy activities_center_admin_update_guard
-  on public.activities
-  as restrictive
-  for update
-  to authenticated
-  using (public.current_user_is_center_admin(organization_id))
-  with check (public.current_user_is_center_admin(organization_id));
-drop policy if exists activities_center_admin_delete_guard on public.activities;
-create policy activities_center_admin_delete_guard
-  on public.activities
-  as restrictive
-  for delete
-  to authenticated
-  using (public.current_user_is_center_admin(organization_id));
+do $$
+begin
+  if to_regclass('public.activities') is not null then
+    alter table public.activities
+      add column if not exists screenings_done integer not null default 0,
+      add column if not exists health_talks_given integer not null default 0,
+      add column if not exists cover_image_path text;
+    if to_regclass('public.activity_participants') is not null then
+      alter table public.activity_participants
+        add column if not exists created_at timestamptz not null default now();
+    end if;
 
-alter table public.activity_participants enable row level security;
-drop policy if exists activity_participants_center_admin_access on public.activity_participants;
-create policy activity_participants_center_admin_access
-  on public.activity_participants
-  for all
-  to authenticated
-  using (public.current_user_is_admin_for_activity(activity_id))
-  with check (public.current_user_is_admin_for_activity(activity_id));
-drop policy if exists activity_participants_member_read_self on public.activity_participants;
-create policy activity_participants_member_read_self
-  on public.activity_participants
-  for select
-  to authenticated
-  using (
-    exists (
-      select 1
-      from public.members m
-      where m.id = activity_participants.member_id
-        and m.user_id = (select auth.uid())
-    )
-  );
-drop policy if exists activity_participants_center_admin_guard on public.activity_participants;
-create policy activity_participants_center_admin_guard
-  on public.activity_participants
-  as restrictive
-  for all
-  to authenticated
-  using (
-    public.current_user_is_admin_for_activity(activity_id)
-    or exists (
-      select 1
-      from public.members m
-      where m.id = activity_participants.member_id
-        and m.user_id = (select auth.uid())
-    )
-  )
-  with check (public.current_user_is_admin_for_activity(activity_id));
+    execute $migrate$
+      insert into public.events (
+        id, organization_id, name, date, location, description, event_type, status,
+        cover_image_path, people_reached, pregnancies_identified,
+        contraceptives_distributed, health_screenings, health_talks_held,
+        notes, created_at
+      )
+      select
+        a.id,
+        a.organization_id,
+        'Historical ' || replace(coalesce(a.activity_type, 'activity'), '_', ' '),
+        a.date,
+        a.location,
+        a.description,
+        case when a.activity_type = 'health_talk' then 'health_talk' else 'other' end,
+        'scheduled',
+        a.cover_image_path,
+        coalesce(a.people_reached, 0),
+        coalesce(a.pregnancies_identified, 0),
+        coalesce(a.contraceptives_distributed, 0),
+        coalesce(a.screenings_done, 0),
+        coalesce(a.health_talks_given, 0),
+        a.description,
+        coalesce(a.created_at, now())
+      from public.activities a
+      where not exists (select 1 from public.events e where e.id = a.id)
+      on conflict (id) do nothing
+    $migrate$;
+
+    if to_regclass('public.activity_participants') is not null then
+      execute $migrate$
+        insert into public.event_invitations (event_id, member_id, status, created_at)
+        select a.id, ap.member_id, 'attended', coalesce(ap.created_at, now())
+        from public.activity_participants ap
+        join public.activities a on a.id = ap.activity_id
+        where not exists (
+          select 1 from public.event_invitations ei
+          where ei.event_id = a.id and ei.member_id = ap.member_id
+        )
+      $migrate$;
+    end if;
+  end if;
+
+  execute 'drop function if exists public.current_user_can_view_activity(uuid) cascade';
+  execute 'drop function if exists public.current_user_is_admin_for_activity(uuid) cascade';
+  if to_regclass('public.activity_participants') is not null then
+    execute 'drop table public.activity_participants';
+  end if;
+  if to_regclass('public.activities') is not null then
+    execute 'drop table public.activities';
+  end if;
+end;
+$$;
 
 alter table public.event_invitations enable row level security;
 drop policy if exists event_invitations_center_admin_access on public.event_invitations;
@@ -1630,9 +2015,10 @@ create policy event_feedback_no_delete_guard
 
 grant select, insert, update, delete on public.members to authenticated;
 grant select, insert, update, delete on public.events to authenticated;
-grant select, insert, update, delete on public.activities to authenticated;
 grant select, insert, update, delete on public.event_invitations to authenticated;
-grant select, insert, delete on public.activity_participants to authenticated;
+grant select, insert, update, delete on public.meetings to authenticated;
+grant select, insert, update, delete on public.meeting_facilitators to authenticated;
+grant select, insert, update, delete on public.meeting_attendance to authenticated;
 
 drop policy if exists organization_posts_read_same_friendly_space on public.organization_posts;
 create policy organization_posts_read_same_friendly_space

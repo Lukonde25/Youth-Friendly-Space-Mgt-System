@@ -7,7 +7,7 @@ import useTheme from './hooks/useTheme'
 import DashboardPage from './pages/DashboardPage'
 import MembersPage from './pages/MembersPage'
 import EventsPage from './pages/EventsPage'
-import ActivitiesPage from './pages/ActivitiesPage'
+import MeetingsPage from './pages/MeetingsPage'
 import PostsPage from './pages/PostsPage'
 import MemberRequestsPage from './pages/MemberRequestsPage'
 import MemberPortalPage from './pages/MemberPortalPage'
@@ -165,25 +165,25 @@ export default function App() {
 
   const navItems = isAdmin
     ? [
-        { label: '📊 Dashboard', href: '#', active: currentPage === 'dashboard', onClick: () => setCurrentPage('dashboard') },
-        { label: '👥 Members', href: '#', active: currentPage === 'members', onClick: () => setCurrentPage('members') },
-        { label: '📅 Events', href: '#', active: currentPage === 'events', onClick: () => setCurrentPage('events') },
-        { label: '📝 Activities', href: '#', active: currentPage === 'activities', onClick: () => setCurrentPage('activities') },
-        { label: '📣 Centre News', href: '#', active: currentPage === 'posts', onClick: () => setCurrentPage('posts') },
-        { label: '🙋 Join Requests', href: '#', active: currentPage === 'requests', onClick: () => setCurrentPage('requests') }
+        { label: 'Dashboard', href: '#', active: currentPage === 'dashboard', onClick: () => setCurrentPage('dashboard') },
+        { label: 'Members', href: '#', active: currentPage === 'members', onClick: () => setCurrentPage('members') },
+        { label: 'Events', href: '#', active: currentPage === 'events', onClick: () => setCurrentPage('events') },
+        { label: 'Meetings', href: '#', active: currentPage === 'meetings', onClick: () => setCurrentPage('meetings') },
+        { label: 'Centre News', href: '#', active: currentPage === 'posts', onClick: () => setCurrentPage('posts') },
+        { label: 'Join Requests', href: '#', active: currentPage === 'requests', onClick: () => setCurrentPage('requests') }
       ]
     : [
-        { label: '⌂ Overview', href: '#', active: currentPage === 'feed' || currentPage === 'dashboard', onClick: () => setCurrentPage('feed') },
-        { label: '▣ Events', href: '#', active: currentPage === 'member-events', onClick: () => setCurrentPage('member-events') },
-        { label: '◷ Activities', href: '#', active: currentPage === 'member-activities', onClick: () => setCurrentPage('member-activities') },
-        { label: '● Profile', href: '#', active: currentPage === 'member-profile', onClick: () => setCurrentPage('member-profile') }
+        { label: 'Overview', href: '#', active: currentPage === 'feed' || currentPage === 'dashboard', onClick: () => setCurrentPage('feed') },
+        { label: 'Events', href: '#', active: currentPage === 'member-events', onClick: () => setCurrentPage('member-events') },
+        { label: 'Meetings', href: '#', active: currentPage === 'member-meetings', onClick: () => setCurrentPage('member-meetings') },
+        { label: 'Profile', href: '#', active: currentPage === 'member-profile', onClick: () => setCurrentPage('member-profile') }
       ]
 
   const pageConfig = {
     dashboard: { title: 'Dashboard', subtitle: 'Your friendly space impact at a glance' },
     members: { title: 'Members', subtitle: 'Manage your friendly space members' },
     events: { title: 'Events', subtitle: 'Create and manage events' },
-    activities: { title: 'Activities', subtitle: 'Log outreach activities and health services' },
+    meetings: { title: 'Meetings', subtitle: 'Plan and document facilitator-led meetings' },
     posts: { title: 'Centre News', subtitle: 'Share updates with your friendly space' },
     requests: { title: 'Join Requests', subtitle: 'Approve new members to your friendly space' },
     feed: { title: 'Overview', subtitle: profile.organizationName }
@@ -207,7 +207,7 @@ export default function App() {
           activeTab={{
             feed: 'Overview',
             'member-events': 'Events',
-            'member-activities': 'Activities',
+            'member-meetings': 'Meetings',
             'member-profile': 'Profile'
           }[currentPage] || 'Overview'}
         />
@@ -219,19 +219,23 @@ export default function App() {
         return <MembersPage organizationId={profile.organization_id} />
       case 'events':
         return <EventsPage organizationId={profile.organization_id} userId={user.id} />
-      case 'activities':
-        return <ActivitiesPage organizationId={profile.organization_id} userId={user.id} />
+      case 'meetings':
+        return <MeetingsPage organizationId={profile.organization_id} userId={user.id} appRole={profile.app_role} onOpenCommunityPost={() => setCurrentPage('posts')} />
       case 'posts':
         return <PostsPage organizationId={profile.organization_id} userId={user.id} />
       case 'requests':
         return <MemberRequestsPage organizationId={profile.organization_id} />
       case 'dashboard':
       default:
-        return <DashboardPage organizationId={profile.organization_id} />
+        return <DashboardPage organizationId={profile.organization_id} onOpenMeetings={() => setCurrentPage('meetings')} />
     }
   }
 
-  const config = pageConfig[isAdmin ? currentPage : 'feed']
+  const config = isAdmin
+    ? pageConfig[currentPage]
+    : currentPage === 'member-meetings'
+      ? { title: 'Meetings', subtitle: 'Meetings you attended' }
+      : pageConfig.feed
 
   return (
     <MainLayout
@@ -249,9 +253,13 @@ export default function App() {
       showPageHeading={!isAdmin || currentPage !== 'dashboard'}
       theme={theme}
       onToggleTheme={toggleTheme}
-      notificationUserId={isAdmin ? user.id : null}
-      notificationOrganizationId={isAdmin ? profile.organization_id : null}
+      notificationUserId={user.id}
+      notificationOrganizationId={profile.organization_id}
       onOpenMembershipRequests={() => setCurrentPage('requests')}
+      onOpenMeetings={() => setCurrentPage('meetings')}
+      onOpenCommunityPost={() => setCurrentPage(isAdmin ? 'posts' : 'feed')}
+      notificationFooterLabel={isAdmin ? 'View membership requests' : 'View community posts'}
+      onOpenNotificationFooter={() => setCurrentPage(isAdmin ? 'requests' : 'feed')}
     >
       {renderPage()}
     </MainLayout>

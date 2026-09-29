@@ -1,6 +1,15 @@
 import { supabase } from './supabaseClient'
 import { attachSignedCoverUrls, removeCoverImage, uploadCoverImage } from './postService'
 
+const attachOutcomePhotos = async (events) => Promise.all(events.map(async (event) => {
+  if (!event.photo_url) return { ...event, outcome_photo_url: null }
+  const { data, error } = await supabase.storage
+    .from('organization-post-covers')
+    .createSignedUrl(event.photo_url, 60 * 60)
+  if (error) throw error
+  return { ...event, outcome_photo_url: data.signedUrl }
+}))
+
 export const fetchEvents = async (organizationId) => {
   const { data, error } = await supabase
     .from('events')
@@ -8,7 +17,8 @@ export const fetchEvents = async (organizationId) => {
     .eq('organization_id', organizationId)
     .order('date', { ascending: false })
   if (error) throw error
-  return attachSignedCoverUrls(data || [])
+  const withCovers = await attachSignedCoverUrls(data || [])
+  return attachOutcomePhotos(withCovers)
 }
 
 export const fetchEvent = async (eventId) => {
@@ -30,7 +40,8 @@ export const fetchEvent = async (eventId) => {
     attended: invitations?.filter(i => i.status === 'attended').length || 0
   }
 
-  return (await attachSignedCoverUrls([{ ...data, ...stats }]))[0]
+  const [withCover] = await attachSignedCoverUrls([{ ...data, ...stats }])
+  return (await attachOutcomePhotos([withCover]))[0]
 }
 
 export const createEvent = async (organizationId, userId, eventData) => {

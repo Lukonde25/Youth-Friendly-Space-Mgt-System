@@ -22,8 +22,7 @@ import {
   subscribeToNotifications
 } from '../services/notificationService';
 
-const getNavIcon = (label = '') => label.split(' ')[0] || '•';
-const getNavText = (label = '') => label.replace(/^\S+\s*/, '');
+const getNavText = (label = '') => label;
 
 const MainLayout = ({
   children,
@@ -42,6 +41,10 @@ const MainLayout = ({
   notificationUserId,
   notificationOrganizationId,
   onOpenMembershipRequests,
+  onOpenMeetings,
+  onOpenCommunityPost,
+  onOpenNotificationFooter,
+  notificationFooterLabel = 'View membership requests',
   className = '',
   ...props
 }) => {
@@ -126,7 +129,13 @@ const MainLayout = ({
 
     setNotificationBusyId(null)
     setIsNotificationsOpen(false)
-    onOpenMembershipRequests?.()
+    if (notification.notification_type === 'meeting_assignment') {
+      onOpenMeetings?.()
+    } else if (notification.notification_type === 'community_post') {
+      onOpenCommunityPost?.()
+    } else {
+      onOpenMembershipRequests?.()
+    }
   }
 
   const renderNotificationControl = (className) => {
@@ -168,7 +177,6 @@ const MainLayout = ({
                   disabled={notificationBusyId === notification.id}
                   onClick={() => openRequestNotification(notification)}
                 >
-                  <span className="notification-item-icon" aria-hidden="true">👤</span>
                   <span className="notification-item-copy">
                     <strong>{notification.title}</strong>
                     <span>{notification.body}</span>
@@ -187,10 +195,10 @@ const MainLayout = ({
               className="notification-view-requests"
               onClick={() => {
                 setIsNotificationsOpen(false)
-                onOpenMembershipRequests?.()
+                onOpenNotificationFooter?.()
               }}
             >
-              View membership requests
+              {notificationFooterLabel}
             </button>
           </section>
         )}
@@ -257,7 +265,6 @@ const MainLayout = ({
                       aria-selected={item.active}
                       onClick={() => navigateTo(item)}
                     >
-                      <span aria-hidden="true">{getNavIcon(item.label)}</span>
                       {getNavText(item.label)}
                     </button>
                   )) : <p>No matching sections</p>}
@@ -335,9 +342,6 @@ const MainLayout = ({
                         .filter(Boolean)
                         .join(' ')}
                     >
-                      <span className="sidebar-nav-icon" aria-hidden="true">
-                        {item.icon || getNavIcon(item.label)}
-                      </span>
                       <span>{getNavText(item.label)}</span>
                     </a>
                   </li>
@@ -394,7 +398,6 @@ const MainLayout = ({
               className={item.active ? 'app-mobile-nav-item active' : 'app-mobile-nav-item'}
               onClick={() => navigateTo(item)}
             >
-              <span className="mobile-nav-icon" aria-hidden="true">{getNavIcon(item.label)}</span>
               <span>{getNavText(item.label)}</span>
             </button>
           ))}
@@ -432,13 +435,11 @@ const MainLayout = ({
                 className={item.active ? 'mobile-menu-link active' : 'mobile-menu-link'}
                 onClick={() => navigateTo(item)}
               >
-                <span aria-hidden="true">{getNavIcon(item.label)}</span>
                 {getNavText(item.label)}
               </button>
             ))}
             {onLogout && (
               <button type="button" className="mobile-menu-link mobile-menu-logout" onClick={onLogout}>
-                <span aria-hidden="true">↪</span>
                 Sign out
               </button>
             )}

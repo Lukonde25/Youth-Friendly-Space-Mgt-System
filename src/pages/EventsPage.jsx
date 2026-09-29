@@ -8,10 +8,12 @@ import {
   cancelEvent,
   inviteMembers,
   fetchEventInvitations,
-  updateInvitationStatus
+  updateInvitationStatus,
+  updateEvent
 } from '../services/eventService'
 import { getAvailableMembersForEvent } from '../services/memberService'
 import { fetchEventFeedback } from '../services/eventFeedbackService'
+import { createPost, deletePost, removeCoverImage, uploadCoverImage } from '../services/postService'
 
 export default function EventsPage({ organizationId, userId }) {
   const [events, setEvents] = useState([])
@@ -31,6 +33,7 @@ export default function EventsPage({ organizationId, userId }) {
       setError(null)
       const eventsData = await fetchEvents(organizationId)
       setEvents(eventsData || [])
+      setSelectedEvent((current) => current ? eventsData.find((item) => item.id === current.id) || null : null)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -108,7 +111,10 @@ export default function EventsPage({ organizationId, userId }) {
           <EventAttendanceModal
             isOpen={showAttendance}
             event={selectedEvent}
+            organizationId={organizationId}
+            userId={userId}
             onClose={() => { setShowAttendance(false); setSelectedEvent(null) }}
+            onSaved={loadData}
           />
         </>
       )}
@@ -266,12 +272,15 @@ function CreateEventForm({ organizationId, userId, onSuccess }) {
   )
 }
 
-function EventAttendanceModal({ isOpen, event, onClose }) {
+function EventAttendanceModal({ isOpen, event, organizationId, userId, onClose, onSaved }) {
   const [invitations, setInvitations] = useState([])
   const [feedback, setFeedback] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [updatingId, setUpdatingId] = useState(null)
+  const [outcome, setOutcome] = useState(null)
+  const [outcomePhoto, setOutcomePhoto] = useState(null)
+  const [outcomePhotoPreview, setOutcomePhotoPreview] = useState(null)
 
   const loadInvitations = async () => {
     try {
@@ -283,6 +292,15 @@ function EventAttendanceModal({ isOpen, event, onClose }) {
       ])
       setInvitations(invitationData || [])
       setFeedback(feedbackData || [])
+      setOutcome({
+        people_reached: event.people_reached || 0,
+        contraceptives_distributed: event.contraceptives_distributed || 0,
+        pregnancies_identified: event.pregnancies_identified || 0,
+        health_screenings: event.health_screenings || 0,
+        health_talks_held: event.health_talks_held || 0,
+        notes: event.notes || ''
+      })
+      setOutcomePhoto(null)
     } catch (loadError) {
       setError(loadError.message)
     } finally {
@@ -293,6 +311,16 @@ function EventAttendanceModal({ isOpen, event, onClose }) {
   useEffect(() => {
     if (isOpen) loadInvitations()
   }, [event.id, isOpen])
+
+  useEffect(() => {
+    if (!outcomePhoto) {
+      setOutcomePhotoPreview(null)
+      return undefined
+    }
+    const previewUrl = URL.createObjectURL(outcomePhoto)
+    setOutcomePhotoPreview(previewUrl)
+    return () => URL.revokeObjectURL(previewUrl)
+  }, [outcomePhoto])
 
   const setAttendance = async (invitation, status) => {
     try {
@@ -314,8 +342,108 @@ function EventAttendanceModal({ isOpen, event, onClose }) {
     ? (feedback.reduce((sum, item) => sum + item.rating, 0) / feedback.length).toFixed(1)
     : '—'
 
+  const saveOutcomes = async (formEvent) => {
+    formEvent.preventDefault()
+    try {
+      setUpdatingId('outcomes')
+      setError(null)
+      if (outcomePhoto && (!outcomePhoto.type.startsWith('image/') || outcomePhoto.size > 5 * 1024 * 1024)) {
+        throw new Error('Choose an image under 5 MB.')
+      }
+      const photoPath = outcomePhoto
+        ? await uploadCoverImage(organizationId, userId, outcomePhoto)
+        : event.photo_url || null
+      try {
+        await updateEvent(event.id, { ...outcome, photo_url: photoPath })
+      } catch (saveError) {
+        if (outcomePhoto && photoPath) {
+          try {
+            await removeCoverImage(photoPath)
+          } catch (cleanupError) {
+            throw new Error(`Event outcomes could not be saved: ${saveError.message}. Photo cleanup also failed: ${cleanupError.message}`)
+          }
+        }
+        throw saveError
+      }
+      if (outcomePhoto && event.photo_url && event.photo_url !== photoPath) {
+        try {
+          await removeCoverImage(event.photo_url)
+        } catch (cleanupError) {
+          throw new Error(`Event outcomes were saved, but the previous photo could not be removed: ${cleanupError.message}`)
+        }
+      }
+      const savedOutcome = Object.fromEntries(
+        Object.entries(outcome).map(([key, value]) => (
+          key === 'notes' ? [key, value] : [key, Number(value) || 0]
+        ))
+      )
+      setOutcome(savedOutcome)
+      setOutcomePhoto(null)
+      await onSaved()
+    } catch (saveError) {
+      setError(saveError.message)
+    } finally {
+      setUpdatingId(null)
+    }
+  }
+
+  const publishOutcomes = async () => {
+    try {
+      setUpdatingId('post')
+      setError(null)
+      const savedOutcome = Object.fromEntries(
+        Object.entries(outcome).map(([key, value]) => (
+          key === 'notes' ? [key, value] : [key, Number(value) || 0]
+        ))
+      )
+      const photoPath = outcomePhoto
+        ? await uploadCoverImage(organizationId, userId, outcomePhoto)
+        : event.photo_url || null
+      await updateEvent(event.id, { ...savedOutcome, photo_url: photoPath })
+      const post = await createPost(organizationId, userId, {
+        title: `Event outcomes: ${event.name}`,
+        body: [
+          savedOutcome.notes,
+          `People reached: ${savedOutcome.people_reached}`,
+          `Contraceptives distributed: ${savedOutcome.contraceptives_distributed}`,
+          `Pregnancies identified: ${savedOutcome.pregnancies_identified}`,
+          `Health screenings: ${savedOutcome.health_screenings}`,
+          `Health talks held: ${savedOutcome.health_talks_held}`
+        ].filter(Boolean).join('\n\n'),
+        coverFile: outcomePhoto
+      })
+      try {
+        await updateEvent(event.id, { is_posted_to_community: true, post_id: post.id })
+      } catch (linkError) {
+        try {
+          await deletePost(post.id, post.cover_image_path)
+        } catch (cleanupError) {
+          throw new Error(
+            `The event outcomes were posted, but the Event could not be linked: ${linkError.message}. `
+            + `Automatic cleanup also failed: ${cleanupError.message}`
+          )
+        }
+        throw new Error(`The community post could not be linked to the Event: ${linkError.message}`)
+      }
+      if (outcomePhoto && event.photo_url && event.photo_url !== photoPath) {
+        try {
+          await removeCoverImage(event.photo_url)
+        } catch (cleanupError) {
+          throw new Error(`The event outcomes were shared, but the previous photo could not be removed: ${cleanupError.message}`)
+        }
+      }
+      setOutcome(savedOutcome)
+      setOutcomePhoto(null)
+      await onSaved()
+    } catch (publishError) {
+      setError(publishError.message)
+    } finally {
+      setUpdatingId(null)
+    }
+  }
+
   return (
-    <Modal isOpen={isOpen} title={`Attendance: ${event.name}`} onClose={onClose} size="lg">
+    <Modal isOpen={isOpen} title={`Attendance: ${event.name}`} onClose={onClose} size="lg" dialogClassName="event-outcomes-modal">
       {error && <Alert variant="error" className="mb-4">{error}</Alert>}
       <div className="grid grid-3 gap-3 mb-6">
         <Card className="text-center"><strong>{invitations.length}</strong><p className="text-sm text-secondary">Invited</p></Card>
@@ -330,6 +458,54 @@ function EventAttendanceModal({ isOpen, event, onClose }) {
             <p className="text-sm text-secondary">{item.feedback}</p>
           </div>
         )) : <p className="text-secondary">No feedback submitted yet.</p>}
+      </Card>
+      <Card>
+        <h3>Event outcomes</h3>
+        <p className="text-secondary">Record the results and documentation for this event.</p>
+        {outcome && (
+          <form className="space-y-4" onSubmit={saveOutcomes}>
+            <div className="content-compose-fields-grid">
+              {[
+                ['people_reached', 'People reached'],
+                ['contraceptives_distributed', 'Contraceptives distributed'],
+                ['pregnancies_identified', 'Pregnancies identified'],
+                ['health_screenings', 'Health screenings'],
+                ['health_talks_held', 'Health talks held']
+              ].map(([field, label]) => (
+                <label key={field} className="block">
+                  <span className="block mb-2 font-medium text-sm">{label}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={outcome[field]}
+                    onChange={(event) => setOutcome((current) => ({ ...current, [field]: event.target.value }))}
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="block">
+              <span className="block mb-2 font-medium text-sm">Notes</span>
+              <textarea rows="4" maxLength="10000" value={outcome.notes} onChange={(event) => setOutcome((current) => ({ ...current, notes: event.target.value }))} />
+            </label>
+            <label className="block">
+              <span className="block mb-2 font-medium text-sm">Event photo <small>Optional, up to 5 MB</small></span>
+              <input type="file" accept="image/*" onChange={(event) => setOutcomePhoto(event.target.files?.[0] || null)} />
+            </label>
+            {(outcomePhotoPreview || event.outcome_photo_url) && (
+              <img className="meeting-photo-preview" src={outcomePhotoPreview || event.outcome_photo_url} alt={`Documentation for ${event.name}`} />
+            )}
+            <div className="flex gap-3 flex-wrap">
+              <Button type="submit" loading={updatingId === 'outcomes'}>Save event outcomes</Button>
+              {!event.is_posted_to_community && (
+                <Button type="button" variant="secondary" loading={updatingId === 'post'} onClick={publishOutcomes}>
+                  Share outcomes with members
+                </Button>
+              )}
+              {event.is_posted_to_community && <span className="text-secondary">Outcomes shared with members.</span>}
+            </div>
+          </form>
+        )}
       </Card>
       {loading ? <p className="text-secondary">Loading invitations...</p> : invitations.length ? (
         <div className="space-y-3 max-h-96 overflow-y-auto">

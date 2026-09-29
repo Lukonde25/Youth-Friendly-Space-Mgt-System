@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, EventCard } from '../components'
-import ActivityCard from '../components/ActivityCard'
+import MeetingStatusBadge from '../components/MeetingStatusBadge'
 import OrganizationPostCard from '../components/OrganizationPostCard'
 import {
   fetchMemberEventFeedback,
   submitEventFeedback
 } from '../services/eventFeedbackService'
 import { attachSignedCoverUrls, fetchPublishedPosts } from '../services/postService'
+import { fetchMemberMeetings } from '../services/meetingService'
 import { fetchOrganizations, supabase } from '../services/supabaseClient'
 
 export default function MemberPortalPage({ profile, user, activeTab, onMembershipChangeRequested }) {
   const [invitations, setInvitations] = useState([])
-  const [participations, setParticipations] = useState([])
+  const [memberMeetings, setMemberMeetings] = useState([])
   const [organizations, setOrganizations] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -20,6 +21,7 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
   const [requestedOrganizationId, setRequestedOrganizationId] = useState('')
+  const [profileScreen, setProfileScreen] = useState('general')
   const [passwordForm, setPasswordForm] = useState({ password: '', confirmation: '' })
   const [form, setForm] = useState({
     full_name: profile.full_name || '',
@@ -38,39 +40,27 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
     const loadParticipation = async () => {
       try {
         setError(null)
-        const [invitationResult, participationResult] = await Promise.all([
+        const [invitationResult, memberMeetingData] = await Promise.all([
           supabase
             .from('event_invitations')
             .select('id, status, events(id, name, date, location, description, event_type, status, capacity, cover_image_path)')
             .eq('member_id', profile.member_id)
             .order('created_at', { ascending: false }),
-          supabase
-            .from('activity_participants')
-            .select('id, activity_id, activities(id, activity_type, date, location, description, cover_image_path, people_reached, contraceptives_distributed, pregnancies_identified, screenings_done, health_talks_given)')
-            .eq('member_id', profile.member_id)
+          fetchMemberMeetings(profile.member_id, user.id)
         ])
 
         if (invitationResult.error) throw invitationResult.error
-        if (participationResult.error) throw participationResult.error
         const invitationData = invitationResult.data || []
         const eventsWithCovers = await attachSignedCoverUrls(
           invitationData.map((invitation) => invitation.events).filter(Boolean)
         )
         const signedEvents = new Map(eventsWithCovers.map((event) => [event.id, event]))
-        const participationData = participationResult.data || []
-        const activitiesWithCovers = await attachSignedCoverUrls(
-          participationData.map((item) => item.activities).filter(Boolean)
-        )
-        const signedActivities = new Map(activitiesWithCovers.map((activity) => [activity.id, activity]))
         if (isMounted) {
           setInvitations(invitationData.map((invitation) => ({
             ...invitation,
             events: invitation.events ? signedEvents.get(invitation.events.id) : null
           })))
-          setParticipations(participationData.map((item) => ({
-            ...item,
-            activities: item.activities ? signedActivities.get(item.activities.id) : null
-          })))
+          setMemberMeetings(memberMeetingData)
         }
       } catch (loadError) {
         if (isMounted) setError(loadError.message)
@@ -83,10 +73,11 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
     return () => {
       isMounted = false
     }
-  }, [profile.member_id])
+  }, [profile.member_id, user.id])
 
   useEffect(() => {
     if (activeTab !== 'Profile') return undefined
+    setProfileScreen('general')
 
     let isMounted = true
     fetchOrganizations()
@@ -116,15 +107,6 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
     )
   )), [invitations])
   const attendedCount = invitations.filter((invitation) => invitation.status === 'attended').length
-  const contribution = participations.reduce((totals, item) => {
-    const activity = item.activities
-    if (!activity) return totals
-    totals.people += activity.people_reached || 0
-    totals.screenings += activity.screenings_done || 0
-    totals.talks += activity.health_talks_given || 0
-    return totals
-  }, { people: 0, screenings: 0, talks: 0 })
-
   const respondToInvitation = async (invitationId, response) => {
     try {
       setError(null)
@@ -160,18 +142,28 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
         .from('users')
         .update({
           full_name: form.full_name.trim(),
-          phone: form.phone.trim(),
-          age: Number(form.age)
+          phone: form.phone.trim()
         })
         .eq('id', user.id)
       if (profileError) throw profileError
 
       setNotice((current) => current || 'Your profile was updated.')
+      setProfileScreen('general')
     } catch (saveError) {
       setError(saveError.message)
     } finally {
       setSaving(false)
     }
+  }
+
+  const cancelProfileEdit = () => {
+    setForm({
+      full_name: profile.full_name || '',
+      email: user.email || '',
+      phone: profile.phone || '',
+      age: profile.age || ''
+    })
+    setProfileScreen('general')
   }
 
   const changePassword = async (event) => {
@@ -277,18 +269,11 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
       )}
 
       {loading ? (
-        <p className="text-secondary">Loading your activity...</p>
+        <p className="text-secondary">Loading your member information...</p>
       ) : (
         <>
           {activeTab === 'Overview' && (
             <div className="member-home-grid">
-              <section className="member-post-feed">
-                <div className="member-section-heading">
-                  <h2>Posts</h2>
-                  <span>Updates from your friendly space</span>
-                </div>
-                <CentreNews organizationId={profile.organization_id} userId={user.id} />
-              </section>
               <aside className="member-upcoming-sidebar" aria-label="Upcoming events and announcements">
                 <div className="member-section-heading">
                   <h2>Upcoming &amp; announcements</h2>
@@ -341,10 +326,16 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
                 )}
                 <div className="member-upcoming-summary">
                   <span>Events attended</span><strong>{attendedCount}</strong>
-                  <span>Activities joined</span><strong>{participations.length}</strong>
-                  <span>People reached</span><strong>{contribution.people}</strong>
+                  <span>Meetings attended</span><strong>{memberMeetings.filter((meeting) => meeting.was_attended).length}</strong>
                 </div>
               </aside>
+              <section className="member-post-feed">
+                <div className="member-section-heading">
+                  <h2>Posts</h2>
+                  <span>Updates from your friendly space</span>
+                </div>
+                <CentreNews organizationId={profile.organization_id} userId={user.id} />
+              </section>
             </div>
           )}
 
@@ -365,141 +356,140 @@ export default function MemberPortalPage({ profile, user, activeTab, onMembershi
             </div>
           )}
 
-          {activeTab === 'Activities' && (
+          {activeTab === 'Meetings' && (
             <section className="space-y-4">
-              <h3>Your participation</h3>
-              <Card className="member-stat-row">
-                <span>People reached through your activities</span><strong>{contribution.people}</strong>
-              </Card>
-              <Card className="member-stat-row">
-                <span>Screenings supported</span><strong>{contribution.screenings}</strong>
-              </Card>
-              <Card className="member-stat-row">
-                <span>Health talks supported</span><strong>{contribution.talks}</strong>
-              </Card>
-              {participations.map((item) => item.activities && (
-                <ActivityCard key={item.id} activity={item.activities} />
-              ))}
+              <h3>Meetings and facilitation</h3>
+              {memberMeetings.length ? memberMeetings.map((meeting) => (
+                <Card key={meeting.id} className="member-attended-meeting">
+                  <div className="flex-between gap-3">
+                    <h4>{meeting.title}</h4>
+                    <MeetingStatusBadge status={meeting.status} />
+                  </div>
+                  <p className="text-secondary">
+                    <strong>{meeting.is_facilitator ? 'Facilitating a meeting on' : 'Meeting date:'}</strong>{' '}
+                    {new Date(meeting.scheduled_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+                  </p>
+                  <p><strong>Location:</strong> {meeting.location}</p>
+                  {meeting.description && <p>{meeting.description}</p>}
+                  {meeting.topic && <p><strong>Topic:</strong> {meeting.topic}</p>}
+                  {meeting.announcements && <p><strong>Announcements:</strong> {meeting.announcements}</p>}
+                  {meeting.notes && <p>{meeting.notes}</p>}
+                  {meeting.photo_url && <img className="meeting-photo-preview" src={meeting.photo_url} alt={`Photo from ${meeting.title}`} />}
+                </Card>
+              )) : <Card><p className="text-secondary">Meetings you attend or facilitate will appear here.</p></Card>}
             </section>
           )}
 
           {activeTab === 'Profile' && (
             <div className="space-y-6">
-              <Card>
-                <h3>Your profile</h3>
-                <p className="text-secondary">View your details and update your contact information.</p>
-                <form onSubmit={saveProfile} className="space-y-4">
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">Full name</span>
-                    <input
-                      className="w-full p-3 border rounded"
-                      value={form.full_name}
-                      onChange={(event) => setForm({ ...form, full_name: event.target.value })}
-                      required
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">Email</span>
-                    <input
-                      className="w-full p-3 border rounded"
-                      type="email"
-                      value={form.email}
-                      onChange={(event) => setForm({ ...form, email: event.target.value })}
-                      required
-                    />
-                    <span className="block mt-2 text-sm text-secondary">
-                      You’ll need to confirm a new email address using the link sent to it.
-                    </span>
-                  </label>
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">Phone number</span>
-                    <input
-                      className="w-full p-3 border rounded"
-                      type="tel"
-                      value={form.phone}
-                      onChange={(event) => setForm({ ...form, phone: event.target.value })}
-                      required
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">Age</span>
-                    <input
-                      className="w-full p-3 border rounded"
-                      type="number"
-                      min="10"
-                      max="120"
-                      value={form.age}
-                      onChange={(event) => setForm({ ...form, age: event.target.value })}
-                      required
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">Friendly space</span>
-                    <input className="w-full p-3 border rounded" value={profile.organizationName} readOnly />
-                  </label>
-                  <Button type="submit" loading={saving}>Save profile</Button>
-                </form>
-              </Card>
+              {profileScreen !== 'edit' && (
+                <div className="flex gap-3" role="group" aria-label="Profile sections">
+                  <Button
+                    type="button"
+                    variant={profileScreen === 'general' ? 'primary' : 'secondary'}
+                    aria-pressed={profileScreen === 'general'}
+                    onClick={() => setProfileScreen('general')}
+                  >General Info</Button>
+                  <Button
+                    type="button"
+                    variant={profileScreen === 'security' ? 'primary' : 'secondary'}
+                    aria-pressed={profileScreen === 'security'}
+                    onClick={() => setProfileScreen('security')}
+                  >Security</Button>
+                </div>
+              )}
 
-              <Card>
-                <h3>Change friendly space</h3>
-                <p className="text-secondary">
-                  Your current membership will end and the new friendly space coordinator must approve your request.
-                </p>
-                <form onSubmit={requestFriendlySpaceChange} className="space-y-4">
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">Request to join</span>
-                    <select
-                      className="w-full p-3 border rounded"
-                      value={requestedOrganizationId}
-                      onChange={(event) => setRequestedOrganizationId(event.target.value)}
-                      required
-                      disabled={!otherOrganizations.length || spaceSaving}
-                    >
-                      <option value="" disabled>
-                        {otherOrganizations.length ? 'Choose a friendly space' : 'No other friendly spaces available'}
-                      </option>
-                      {otherOrganizations.map((organization) => (
-                        <option key={organization.id} value={organization.id}>{organization.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <Button type="submit" variant="secondary" loading={spaceSaving}>
-                    Request change
-                  </Button>
-                </form>
-              </Card>
+              {profileScreen === 'general' && (
+                <div className="space-y-6">
+                  <Card>
+                    <h3>Friendly space membership</h3>
+                    <p className="text-secondary">
+                      Your current membership will end and the new friendly space coordinator must approve your request.
+                    </p>
+                    <form onSubmit={requestFriendlySpaceChange} className="space-y-4">
+                      <label className="block">
+                        <span className="block mb-2 font-medium text-sm">Request to join</span>
+                        <select
+                          className="w-full p-3 border rounded"
+                          value={requestedOrganizationId}
+                          onChange={(event) => setRequestedOrganizationId(event.target.value)}
+                          required
+                          disabled={!otherOrganizations.length || spaceSaving}
+                        >
+                          <option value="" disabled>
+                            {otherOrganizations.length ? 'Choose a friendly space' : 'No other friendly spaces available'}
+                          </option>
+                          {otherOrganizations.map((organization) => (
+                            <option key={organization.id} value={organization.id}>{organization.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <Button type="submit" variant="secondary" loading={spaceSaving}>Request change</Button>
+                    </form>
+                  </Card>
 
-              <Card>
-                <h3>Change password</h3>
-                <form onSubmit={changePassword} className="space-y-4">
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">New password</span>
-                    <input
-                      className="w-full p-3 border rounded"
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={8}
-                      value={passwordForm.password}
-                      onChange={(event) => setPasswordForm({ ...passwordForm, password: event.target.value })}
-                      required
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="block mb-2 font-medium text-sm">Confirm new password</span>
-                    <input
-                      className="w-full p-3 border rounded"
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={8}
-                      value={passwordForm.confirmation}
-                      onChange={(event) => setPasswordForm({ ...passwordForm, confirmation: event.target.value })}
-                      required
-                    />
-                  </label>
-                  <Button type="submit" loading={passwordSaving}>Update password</Button>
-                </form>
-              </Card>
+                  <Card>
+                    <h3>General Info</h3>
+                    <p className="text-secondary">Your account and contact details.</p>
+                    <dl className="member-profile-details">
+                      <div><dt>Full name</dt><dd>{form.full_name || 'Not provided'}</dd></div>
+                      <div><dt>Email</dt><dd>{user.email || 'Not provided'}</dd></div>
+                      <div><dt>Phone number</dt><dd>{form.phone || 'Not provided'}</dd></div>
+                      <div><dt>Age</dt><dd>{form.age || 'Not provided'}</dd></div>
+                      <div><dt>Friendly space</dt><dd>{profile.organizationName || 'Not provided'}</dd></div>
+                    </dl>
+                    <div className="flex justify-end mt-6">
+                      <Button type="button" onClick={() => setProfileScreen('edit')}>Edit details</Button>
+                    </div>
+                  </Card>
+                </div>
+              )}
+
+              {profileScreen === 'edit' && (
+                <Card>
+                  <div className="flex-between gap-3 mb-4">
+                    <div><h3>Edit details</h3><p className="text-secondary">Update your name, email, and phone number.</p></div>
+                    <Button type="button" variant="secondary" onClick={cancelProfileEdit}>Back</Button>
+                  </div>
+                  <form onSubmit={saveProfile} className="space-y-4">
+                    <label className="block">
+                      <span className="block mb-2 font-medium text-sm">Full name</span>
+                      <input className="w-full p-3 border rounded" value={form.full_name} onChange={(event) => setForm({ ...form, full_name: event.target.value })} required />
+                    </label>
+                    <label className="block">
+                      <span className="block mb-2 font-medium text-sm">Email</span>
+                      <input className="w-full p-3 border rounded" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
+                      <span className="block mt-2 text-sm text-secondary">You’ll need to confirm a new email address using the link sent to it.</span>
+                    </label>
+                    <label className="block">
+                      <span className="block mb-2 font-medium text-sm">Phone number</span>
+                      <input className="w-full p-3 border rounded" type="tel" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} required />
+                    </label>
+                    <div className="flex gap-3">
+                      <Button type="button" variant="secondary" onClick={cancelProfileEdit}>Cancel</Button>
+                      <Button type="submit" loading={saving}>Save details</Button>
+                    </div>
+                  </form>
+                </Card>
+              )}
+
+              {profileScreen === 'security' && (
+                <Card>
+                  <h3>Security</h3>
+                  <p className="text-secondary">Change your account password.</p>
+                  <form onSubmit={changePassword} className="space-y-4">
+                    <label className="block">
+                      <span className="block mb-2 font-medium text-sm">New password</span>
+                      <input className="w-full p-3 border rounded" type="password" autoComplete="new-password" minLength={8} value={passwordForm.password} onChange={(event) => setPasswordForm({ ...passwordForm, password: event.target.value })} required />
+                    </label>
+                    <label className="block">
+                      <span className="block mb-2 font-medium text-sm">Confirm new password</span>
+                      <input className="w-full p-3 border rounded" type="password" autoComplete="new-password" minLength={8} value={passwordForm.confirmation} onChange={(event) => setPasswordForm({ ...passwordForm, confirmation: event.target.value })} required />
+                    </label>
+                    <Button type="submit" loading={passwordSaving}>Update password</Button>
+                  </form>
+                </Card>
+              )}
             </div>
           )}
         </>

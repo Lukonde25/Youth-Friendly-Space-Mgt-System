@@ -262,7 +262,7 @@ function MemberEngagementModal({ member, onClose }) {
         <div className="space-y-5">
           <div className="grid grid-2 gap-4">
             <Card><p className="text-secondary">Events attended</p><strong>{stats.events_attended}</strong></Card>
-            <Card><p className="text-secondary">Activities participated</p><strong>{stats.activities_participated}</strong></Card>
+            <Card><p className="text-secondary">Meetings attended</p><strong>{stats.meetings_attended}</strong></Card>
           </div>
           <section>
             <h4>Event history</h4>
@@ -273,11 +273,11 @@ function MemberEngagementModal({ member, onClose }) {
             ))}
           </section>
           <section>
-            <h4>Activity history</h4>
-            {history?.activities.filter((entry) => entry.activities).map((entry) => (
-              <p key={entry.id} className="text-sm border-t py-2">
-                {entry.activities.activity_type.replaceAll('_', ' ')} · {new Date(entry.activities.date).toLocaleDateString()}
-                {entry.activities.location ? ` · ${entry.activities.location}` : ''}
+            <h4>Meeting history</h4>
+            {history?.meetings.filter((entry) => entry.meetings).map((entry) => (
+              <p key={entry.meeting_id} className="text-sm border-t py-2">
+                {entry.meetings.title} · {new Date(entry.meetings.scheduled_at).toLocaleDateString()}
+                {entry.meetings.location ? ` · ${entry.meetings.location}` : ''}
               </p>
             ))}
           </section>

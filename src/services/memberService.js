@@ -69,46 +69,48 @@ export const deactivateMember = async (memberId) => {
 }
 
 export const getMemberStats = async (memberId) => {
-  const { data: eventData, error: eventError } = await supabase
+  const [eventResult, meetingResult] = await Promise.all([
+    supabase
     .from('event_invitations')
-    .select('*')
+    .select('*', { count: 'exact', head: true })
     .eq('member_id', memberId)
-    .eq('status', 'attended')
-
-  const { data: activityData, error: activityError } = await supabase
-    .from('activity_participants')
-    .select('*')
-    .eq('member_id', memberId)
-
-  if (eventError) throw eventError
-  if (activityError) throw activityError
+    .eq('status', 'attended'),
+    supabase
+      .from('meeting_attendance')
+      .select('*', { count: 'exact', head: true })
+      .eq('member_id', memberId)
+      .eq('attended', true)
+  ])
+  if (eventResult.error) throw eventResult.error
+  if (meetingResult.error) throw meetingResult.error
 
   return {
-    events_attended: eventData?.length || 0,
-    activities_participated: activityData?.length || 0
+    events_attended: eventResult.count || 0,
+    meetings_attended: meetingResult.count || 0
   }
 }
 
 export const getMemberEngagementHistory = async (memberId) => {
-  const [eventResult, activityResult] = await Promise.all([
+  const [eventResult, meetingResult] = await Promise.all([
     supabase
       .from('event_invitations')
       .select('id, status, events(name, date, location)')
       .eq('member_id', memberId)
       .order('created_at', { ascending: false }),
     supabase
-      .from('activity_participants')
-      .select('id, activities(activity_type, date, location)')
+      .from('meeting_attendance')
+      .select('meeting_id, updated_at, meetings(title, scheduled_at, location)')
       .eq('member_id', memberId)
-      .order('created_at', { ascending: false })
+      .eq('attended', true)
+      .order('updated_at', { ascending: false })
   ])
 
   if (eventResult.error) throw eventResult.error
-  if (activityResult.error) throw activityResult.error
+  if (meetingResult.error) throw meetingResult.error
 
   return {
     events: eventResult.data || [],
-    activities: activityResult.data || []
+    meetings: meetingResult.data || []
   }
 }
 

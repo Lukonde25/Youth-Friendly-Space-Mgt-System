@@ -3,9 +3,9 @@
  * 
  * Usage:
  * <Select
- *   label="Activity Type"
- *   value={activityType}
- *   onChange={(e) => setActivityType(e.target.value)}
+ *   label="Choose an option"
+ *   value={optionValue}
+ *   onChange={(e) => setOptionValue(e.target.value)}
  *   options={[
  *     { value: 'clinic', label: 'Clinic Visit' },
  *     { value: 'outreach', label: 'Outreach' }

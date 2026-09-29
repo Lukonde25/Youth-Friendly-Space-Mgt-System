@@ -5,7 +5,7 @@ export const fetchNotifications = async (recipientId) => {
 
   const { data, error } = await supabase
     .from('notifications')
-    .select('id, organization_id, request_user_id, title, body, created_at, read_at')
+    .select('id, organization_id, request_user_id, notification_type, meeting_id, post_id, title, body, created_at, read_at')
     .eq('recipient_id', recipientId)
     .order('created_at', { ascending: false })
     .limit(20)

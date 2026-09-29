@@ -40,12 +40,12 @@ const Alert = ({
 
   return (
     <div className={alertClasses} role="alert" {...props}>
-      <span className="alert-icon">{iconMap[variant]}</span>
+      {variant !== 'error' && <span className="alert-icon">{iconMap[variant]}</span>}
       <div>
         {title && <div className="alert-title">{title}</div>}
         {children}
       </div>
-      {onDismiss && (
+      {onDismiss && variant !== 'error' && (
         <button
           onClick={onDismiss}
           className="btn btn-ghost btn-sm ml-auto"
