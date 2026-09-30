@@ -29,3 +29,20 @@ During signup:
 Existing centre rows without a name are assigned a temporary `Friendly Space <ID>` name by the setup script. Replace those placeholders with the real centre names in the Supabase `organizations` table.
 
 Email and SMS notification delivery is not configured in this phase. Admin notifications are in-app and update live while the app is open.
+
+## Public space discovery
+
+After the existing setup script has been applied, run
+[`supabase/public_discovery.sql`](./supabase/public_discovery.sql) in the Supabase SQL
+Editor. Signed-out visitors can browse public space profiles, search by location or
+interest, and sort spaces with published coordinates by distance. Centre admins manage
+these details from **Public Profile** and can mark individual news posts and events as
+public. Posts and events remain private by default, and public event queries omit
+private outcome metrics.
+
+The address lookup uses OpenStreetMap's Nominatim only after an admin presses **Find
+address on map**; results are cached in that browser. The public Nominatim service is
+intended for moderate, user-triggered traffic and allows at most one request per second
+across the whole application. For higher usage, configure a compatible provider at
+runtime with `window.YOUTH_HEALTH_GEOCODER_URL`. Keep the OpenStreetMap attribution and
+do not send personal or confidential information to the geocoder.

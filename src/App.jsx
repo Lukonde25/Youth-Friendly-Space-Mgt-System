@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { useAuth } from './hooks/useAuth'
 import { MainLayout } from './components'
 import { supabase } from './services/supabaseClient'
-import LoginPage from './pages/LoginPage'
 import useTheme from './hooks/useTheme'
 import DashboardPage from './pages/DashboardPage'
 import MembersPage from './pages/MembersPage'
@@ -11,6 +10,10 @@ import MeetingsPage from './pages/MeetingsPage'
 import PostsPage from './pages/PostsPage'
 import MemberRequestsPage from './pages/MemberRequestsPage'
 import MemberPortalPage from './pages/MemberPortalPage'
+import PublicPortal from './pages/PublicPortal'
+import PublicProfileSettingsPage from './pages/PublicProfileSettingsPage'
+
+const matchesPublicRoute = () => /^#\/(?:$|home|spaces|space\/|nearby|activities|activity\/|interest\/|login)/.test(window.location.hash)
 
 export default function App() {
   const { user, loading, signOut } = useAuth()
@@ -19,6 +22,17 @@ export default function App() {
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(true)
   const [organizationError, setOrganizationError] = useState(null)
+  const [isPublicRoute, setIsPublicRoute] = useState(matchesPublicRoute)
+
+  useEffect(() => {
+    const updateRoute = () => setIsPublicRoute(matchesPublicRoute())
+    window.addEventListener('hashchange', updateRoute)
+    return () => window.removeEventListener('hashchange', updateRoute)
+  }, [])
+
+  useEffect(() => {
+    if (user && window.location.hash === '#/login') window.location.hash = ''
+  }, [user])
 
   useEffect(() => {
     if (!user) {
@@ -76,15 +90,26 @@ export default function App() {
     }
   }, [user])
 
-  if (!user) {
-    return <LoginPage theme={theme} onToggleTheme={toggleTheme} />
-  }
-
-  if (loading || profileLoading) {
+  if (loading) {
     return (
       <div className="flex-center min-h-screen bg-gray-50">
         <div className="text-center">
           <div className="text-4xl mb-4">👥</div>
+          <p className="text-secondary">Loading Youth Health System...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (isPublicRoute || !user) {
+    return <PublicPortal theme={theme} onToggleTheme={toggleTheme} />
+  }
+
+  if (profileLoading) {
+    return (
+      <div className="flex-center min-h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="text-4xl mb-4">ðŸ‘¥</div>
           <p className="text-secondary">Loading Youth Health System...</p>
         </div>
       </div>
@@ -170,7 +195,8 @@ export default function App() {
         { label: 'Events', href: '#', active: currentPage === 'events', onClick: () => setCurrentPage('events') },
         { label: 'Meetings', href: '#', active: currentPage === 'meetings', onClick: () => setCurrentPage('meetings') },
         { label: 'Centre News', href: '#', active: currentPage === 'posts', onClick: () => setCurrentPage('posts') },
-        { label: 'Join Requests', href: '#', active: currentPage === 'requests', onClick: () => setCurrentPage('requests') }
+        { label: 'Join Requests', href: '#', active: currentPage === 'requests', onClick: () => setCurrentPage('requests') },
+        { label: 'Public Profile', href: '#', active: currentPage === 'public-profile', onClick: () => setCurrentPage('public-profile') }
       ]
     : [
         { label: 'Overview', href: '#', active: currentPage === 'feed' || currentPage === 'dashboard', onClick: () => setCurrentPage('feed') },
@@ -186,6 +212,7 @@ export default function App() {
     meetings: { title: 'Meetings', subtitle: 'Plan and document facilitator-led meetings' },
     posts: { title: 'Centre News', subtitle: 'Share updates with your friendly space' },
     requests: { title: 'Join Requests', subtitle: 'Approve new members to your friendly space' },
+    'public-profile': { title: 'Public Profile', subtitle: 'Manage how people discover your friendly space' },
     feed: { title: 'Overview', subtitle: profile.organizationName }
   }
 
@@ -225,6 +252,8 @@ export default function App() {
         return <PostsPage organizationId={profile.organization_id} userId={user.id} />
       case 'requests':
         return <MemberRequestsPage organizationId={profile.organization_id} />
+      case 'public-profile':
+        return <PublicProfileSettingsPage organizationId={profile.organization_id} />
       case 'dashboard':
       default:
         return <DashboardPage organizationId={profile.organization_id} onOpenMeetings={() => setCurrentPage('meetings')} />

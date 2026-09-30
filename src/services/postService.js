@@ -112,7 +112,7 @@ export const fetchPublishedPosts = async (organizationId, userId) => {
 
   const { data, error } = await supabase
     .from('organization_posts')
-    .select('id, title, body, cover_image_path, created_at, organization_post_reactions(count), organization_post_views(count)')
+    .select('id, title, body, cover_image_path, is_public, created_at, organization_post_reactions(count), organization_post_views(count)')
     .eq('organization_id', organizationId)
     .order('created_at', { ascending: false })
 
@@ -177,9 +177,10 @@ export const createPost = async (organizationId, authorId, post) => {
       author_id: authorId,
       title: post.title.trim(),
       body: post.body.trim(),
+      is_public: Boolean(post.isPublic),
       cover_image_path: coverImagePath
     })
-    .select('id, title, body, cover_image_path, created_at')
+    .select('id, title, body, cover_image_path, is_public, created_at')
     .single()
 
   if (error) {

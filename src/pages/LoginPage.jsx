@@ -264,6 +264,8 @@ export default function LoginPage({ theme, onToggleTheme }) {
           </button>
         </div>
 
+        <p className="login-discover-link"><a href="#/spaces">Browse friendly spaces without signing in</a></p>
+
       </Card>
 
       <div className="login-footer fixed bottom-6 left-6 right-6 text-center text-white text-xs opacity-75">

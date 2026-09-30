@@ -14,6 +14,7 @@ import {
 import { getAvailableMembersForEvent } from '../services/memberService'
 import { fetchEventFeedback } from '../services/eventFeedbackService'
 import { createPost, deletePost, removeCoverImage, uploadCoverImage } from '../services/postService'
+import { setEventPublic } from '../services/publicService'
 
 export default function EventsPage({ organizationId, userId }) {
   const [events, setEvents] = useState([])
@@ -64,6 +65,17 @@ export default function EventsPage({ organizationId, userId }) {
     }
   }
 
+  const handleTogglePublic = async (event) => {
+    try {
+      setError(null)
+      await setEventPublic(event.id, !event.is_public)
+      setEvents((current) => current.map((item) => item.id === event.id ? { ...item, is_public: !event.is_public } : item))
+      setSelectedEvent((current) => current?.id === event.id ? { ...current, is_public: !event.is_public } : current)
+    } catch (toggleError) {
+      setError(toggleError.message)
+    }
+  }
+
   if (loading) return <div className="p-6 text-center text-secondary">Loading events...</div>
 
   return (
@@ -79,16 +91,21 @@ export default function EventsPage({ organizationId, userId }) {
       {events.length > 0 ? (
         <div className="grid grid-2 gap-6">
           {events.map(event => (
-            <EventCard
-              key={event.id}
-              event={event}
-              onDelete={() => handleDeleteEvent(event.id)}
-              onCancel={() => handleCancelEvent(event)}
-              onSendReminders={() => { setSelectedEvent(event); setShowInviteForm(true) }}
-              onViewMetrics={() => { setSelectedEvent(event); setShowAttendance(true) }}
-              invitationActionLabel="Invite Members"
-              showActions={true}
-            />
+            <div key={event.id} className="admin-event-row">
+              <EventCard
+                event={event}
+                onDelete={() => handleDeleteEvent(event.id)}
+                onCancel={() => handleCancelEvent(event)}
+                onSendReminders={() => { setSelectedEvent(event); setShowInviteForm(true) }}
+                onViewMetrics={() => { setSelectedEvent(event); setShowAttendance(true) }}
+                invitationActionLabel="Invite Members"
+                showActions={true}
+              />
+              <div className="admin-post-public-control">
+                <span>{event.is_public ? 'Visible in public discovery' : 'Members only'}</span>
+                <Button type="button" size="sm" variant="secondary" onClick={() => handleTogglePublic(event)}>{event.is_public ? 'Make private' : 'Make public'}</Button>
+              </div>
+            </div>
           ))}
         </div>
       ) : (
@@ -139,7 +156,7 @@ function CreateEventForm({ organizationId, userId, onSuccess }) {
   }, [coverFile])
 
   const form = useForm(
-    { name: '', event_type: 'health_talk', date: '', location: '', description: '', capacity: '' },
+    { name: '', event_type: 'health_talk', date: '', location: '', description: '', capacity: '', is_public: false },
     async (values) => {
       try {
         setSubmitError(null)
@@ -185,6 +202,7 @@ function CreateEventForm({ organizationId, userId, onSuccess }) {
             <span>Event name</span>
             <input type="text" name="name" placeholder="Give your event a clear title" value={form.values.name} onChange={form.handleChange} required maxLength="160" />
           </label>
+          <label className="public-visibility-toggle"><input type="checkbox" name="is_public" checked={form.values.is_public} onChange={form.handleChange} /><span><strong>List this activity publicly</strong><small>Public activities appear on your friendly space profile. Health outcome figures and member information are never shown here.</small></span></label>
           <label className="content-compose-field">
             <span>Description</span>
             <textarea name="description" placeholder="What should members know about this event?" value={form.values.description} onChange={form.handleChange} rows="3" maxLength="10000" />

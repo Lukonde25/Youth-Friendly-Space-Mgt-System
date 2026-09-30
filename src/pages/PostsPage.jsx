@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card } from '../components'
 import OrganizationPostCard from '../components/OrganizationPostCard'
 import { createPost, deletePost, fetchPublishedPosts } from '../services/postService'
+import { setPostPublic } from '../services/publicService'
 
 export default function PostsPage({ organizationId, userId }) {
   const [posts, setPosts] = useState([])
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  const [isPublic, setIsPublic] = useState(false)
   const [coverFile, setCoverFile] = useState(null)
   const [coverPreviewUrl, setCoverPreviewUrl] = useState(null)
   const coverInputRef = useRef(null)
@@ -46,16 +48,27 @@ export default function PostsPage({ organizationId, userId }) {
     try {
       setSaving(true)
       setError(null)
-      const createdPost = await createPost(organizationId, userId, { title, body, coverFile })
+      const createdPost = await createPost(organizationId, userId, { title, body, coverFile, isPublic })
       setPosts((current) => [createdPost, ...current])
       setTitle('')
       setBody('')
+      setIsPublic(false)
       setCoverFile(null)
       if (coverInputRef.current) coverInputRef.current.value = ''
     } catch (err) {
       setError(err.message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const togglePublic = async (post) => {
+    try {
+      setError(null)
+      await setPostPublic(post.id, !post.is_public)
+      setPosts((current) => current.map((item) => item.id === post.id ? { ...item, is_public: !post.is_public } : item))
+    } catch (err) {
+      setError(err.message)
     }
   }
 
@@ -176,6 +189,7 @@ export default function PostsPage({ organizationId, userId }) {
               </div>
             </div>
           </div>
+          <label className="public-visibility-toggle"><input type="checkbox" checked={isPublic} onChange={(event) => setIsPublic(event.target.checked)} /><span><strong>Show this update publicly</strong><small>Public updates appear on your friendly space profile. Member information and engagement details stay private.</small></span></label>
           <Button type="submit" loading={saving}>Publish post</Button>
         </form>
       </Card>
@@ -185,7 +199,13 @@ export default function PostsPage({ organizationId, userId }) {
         {loading ? (
           <p className="text-secondary">Loading updates...</p>
         ) : posts.length ? posts.map((post) => (
-          <OrganizationPostCard key={post.id} post={post} userId={userId} onDelete={handleDelete} />
+          <div key={post.id} className="admin-post-row">
+            <OrganizationPostCard post={post} userId={userId} onDelete={handleDelete} />
+            <div className="admin-post-public-control">
+              <span>{post.is_public ? 'Visible on the public space profile' : 'Members only'}</span>
+              <Button type="button" size="sm" variant="secondary" onClick={() => togglePublic(post)}>{post.is_public ? 'Make private' : 'Make public'}</Button>
+            </div>
+          </div>
         )) : (
           <Card className="text-center py-8">
             <p className="text-secondary">No updates have been published yet.</p>
